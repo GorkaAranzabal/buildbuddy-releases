@@ -1,0 +1,25 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Gorka Copilot Connector",
+	"Description": "Connects Unreal Engine to Gorka Copilot Overlay for AI-powered development assistance",
+	"Category": "Editor",
+	"CreatedBy": "Gorka Copilot Team",
+	"CreatedByURL": "https://gorkacopilot.dev",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"EnabledByDefault": true,
+	"Modules": [
+		{
+			"Name": "GorkaCopilotConnector",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}

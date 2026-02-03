@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Screenshot Coordinate Checker</title>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            margin: 20px;
+            background: #1a1a1a;
+            color: white;
+        }
+        .container {
+            position: relative;
+            display: inline-block;
+        }
+        #screenshot {
+            max-width: 100%;
+            cursor: crosshair;
+        }
+        #crosshair {
+            position: absolute;
+            pointer-events: none;
+        }
+        #crosshair-h {
+            position: absolute;
+            height: 2px;
+            background: red;
+            width: 100%;
+            left: 0;
+        }
+        #crosshair-v {
+            position: absolute;
+            width: 2px;
+            background: red;
+            height: 100%;
+            top: 0;
+        }
+        #ai-marker {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            border: 3px solid lime;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #ai-marker::before {
+            content: '';
+            position: absolute;
+            width: 10px;
+            height: 2px;
+            background: lime;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+        }
+        #ai-marker::after {
+            content: '';
+            position: absolute;
+            width: 2px;
+            height: 10px;
+            background: lime;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+        }
+        .info {
+            background: #333;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+        }
+        .coords {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00ff00;
+        }
+        .ai-coords {
+            color: lime;
+            font-weight: bold;
+        }
+        input {
+            padding: 8px;
+            font-size: 16px;
+            width: 100px;
+            margin: 0 5px;
+            background: #444;
+            border: 1px solid #666;
+            color: white;
+            border-radius: 4px;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 16px;
+            background: #0066ff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0055dd;
+        }
+        .instructions {
+            background: #2a2a4a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎯 Screenshot Coordinate Checker</h1>
+    
+    <div class="instructions">
+        <h3>Instructions:</h3>
+        <ol>
+            <li>The screenshot from your Desktop is loaded below</li>
+            <li><strong>Green circle</strong> = Where AI wants to click (set coordinates below)</li>
+            <li><strong>Red crosshairs</strong> = Your mouse position</li>
+            <li>Hover over the <strong>actual + button</strong> to see its real coordinates</li>
+            <li>Compare with what the AI chose!</li>
+        </ol>
+    </div>
+
+    <div class="info">
+        <div>Your mouse position: <span class="coords" id="mouse-coords">(-, -)</span></div>
+        <div style="margin-top: 10px;">
+            AI click position: 
+            <input type="number" id="ai-x" value="2500" placeholder="X"> ,
+            <input type="number" id="ai-y" value="70" placeholder="Y">
+            <button onclick="updateAIMarker()">Update Marker</button>
+            <span class="ai-coords" id="ai-display">(2500, 70)</span>
+        </div>
+    </div>
+
+    <div class="container" id="container">
+        <img id="screenshot" src="file:///Users/gorkaaranzabal/Desktop/buildbuddy_debug_screenshot.png" alt="Screenshot">
+        <div id="crosshair">
+            <div id="crosshair-h"></div>
+            <div id="crosshair-v"></div>
+        </div>
+        <div id="ai-marker"></div>
+    </div>
+
+    <script>
+        const img = document.getElementById('screenshot');
+        const container = document.getElementById('container');
+        const crosshairH = document.getElementById('crosshair-h');
+        const crosshairV = document.getElementById('crosshair-v');
+        const aiMarker = document.getElementById('ai-marker');
+        const mouseCoords = document.getElementById('mouse-coords');
+        
+        let imgNaturalWidth = 2560;
+        let imgNaturalHeight = 1440;
+        
+        img.onload = function() {
+            imgNaturalWidth = img.naturalWidth;
+            imgNaturalHeight = img.naturalHeight;
+            console.log('Image loaded:', imgNaturalWidth, 'x', imgNaturalHeight);
+            updateAIMarker();
+        };
+        
+        img.onerror = function() {
+            alert('Could not load image. Please:\n1. Open this file in Chrome/Firefox\n2. Or drag the screenshot onto this page');
+        };
+
+        container.addEventListener('mousemove', function(e) {
+            const rect = img.getBoundingClientRect();
+            const scaleX = imgNaturalWidth / rect.width;
+            const scaleY = imgNaturalHeight / rect.height;
+            
+            const x = Math.round((e.clientX - rect.left) * scaleX);
+            const y = Math.round((e.clientY - rect.top) * scaleY);
+            
+            // Update crosshairs
+            crosshairH.style.top = (e.clientY - rect.top) + 'px';
+            crosshairV.style.left = (e.clientX - rect.left) + 'px';
+            
+            // Update coords display
+            mouseCoords.textContent = `(${x}, ${y})`;
+        });
+
+        function updateAIMarker() {
+            const x = parseInt(document.getElementById('ai-x').value) || 0;
+            const y = parseInt(document.getElementById('ai-y').value) || 0;
+            
+            const rect = img.getBoundingClientRect();
+            const scaleX = rect.width / imgNaturalWidth;
+            const scaleY = rect.height / imgNaturalHeight;
+            
+            aiMarker.style.left = (x * scaleX) + 'px';
+            aiMarker.style.top = (y * scaleY) + 'px';
+            
+            document.getElementById('ai-display').textContent = `(${x}, ${y})`;
+        }
+        
+        // Allow drag and drop
+        document.body.addEventListener('dragover', (e) => e.preventDefault());
+        document.body.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+    </script>
+</body>
+</html>

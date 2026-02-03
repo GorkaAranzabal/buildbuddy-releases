@@ -1,0 +1,94 @@
+appId: com.gorka.copilot
+productName: Gorka Copilot
+copyright: Copyright © 2026 Gorka Copilot Team
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - "dist/**/*"
+  - "package.json"
+
+extraMetadata:
+  main: dist/main/index.js
+
+# macOS configuration
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  icon: build/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: "This app does not use the microphone."
+    NSCameraUsageDescription: "This app does not use the camera."
+    NSScreenCaptureDescription: "Screen capture is used to provide visual context for AI assistance."
+
+dmg:
+  background: build/dmg-background.png
+  icon: build/icon.icns
+  iconSize: 100
+  contents:
+    - x: 380
+      y: 280
+      type: link
+      path: /Applications
+    - x: 130
+      y: 280
+      type: file
+
+# Windows configuration
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  publisherName: Gorka Copilot Team
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Gorka Copilot
+
+# Linux configuration (optional)
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  icon: build/icons
+  category: Development
+
+# Auto-update configuration
+publish:
+  provider: github
+  owner: gorka-copilot
+  repo: overlay
+  releaseType: release
+
+# Electron version
+electronVersion: "28.2.2"
+
+# ASAR archive
+asar: true
+asarUnpack:
+  - "**/*.node"

@@ -1,0 +1,2 @@
+// ===== Connector Event Types =====
+export {};

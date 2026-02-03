@@ -1,0 +1,88 @@
+{
+  "name": "gorka-copilot-overlay",
+  "productName": "BuildBuddy",
+  "version": "1.0.0",
+  "description": "Desktop overlay assistant for Unreal Engine developers",
+  "type": "module",
+  "main": "dist/main/index.js",
+  "author": "Gorka Copilot Team",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "dev:electron": "vite build && electron .",
+    "build": "vite build",
+    "build:renderer": "vite build",
+    "preview": "vite preview",
+    "package": "vite build && electron-builder",
+    "package:mac": "vite build && electron-builder --mac --dir",
+    "package:win": "vite build && electron-builder --win",
+    "lint": "eslint src --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.17.0",
+    "@jitsi/robotjs": "^0.6.21",
+    "electron-store": "^8.1.0",
+    "lowdb": "^7.0.1",
+    "openai": "^4.28.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^9.0.1",
+    "uuid": "^9.0.1",
+    "ws": "^8.16.0",
+    "zustand": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "@types/uuid": "^9.0.8",
+    "@types/ws": "^8.5.10",
+    "@typescript-eslint/eslint-plugin": "^7.0.1",
+    "@typescript-eslint/parser": "^7.0.1",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.17",
+    "electron": "^28.2.2",
+    "electron-builder": "^24.13.3",
+    "eslint": "^8.56.0",
+    "eslint-plugin-react": "^7.33.2",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.4",
+    "vite-plugin-electron": "^0.28.4",
+    "vite-plugin-electron-renderer": "^0.14.5"
+  },
+  "build": {
+    "appId": "com.gorka.buildbuddy",
+    "productName": "BuildBuddy",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dir",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "BuildBuddy needs permission to control your computer to perform automated actions.",
+        "NSAccessibilityUsageDescription": "BuildBuddy needs accessibility access to control mouse and keyboard for the 'Do it for me' feature."
+      }
+    },
+    "win": {
+      "target": "portable"
+    },
+    "extraResources": [
+      {
+        "from": "node_modules/@jitsi/robotjs",
+        "to": "node_modules/@jitsi/robotjs"
+      }
+    ]
+  }
+}
