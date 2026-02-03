@@ -102,6 +102,26 @@ const electronAPI = {
       return () => ipcRenderer.removeListener('agent:progress', subscription);
     },
   },
+
+  // Unreal Engine commands
+  ue: {
+    isConnected: () => ipcRenderer.invoke('ue:is-connected'),
+    executeCommand: (command, params) => ipcRenderer.invoke('ue:execute-command', command, params),
+    // Blueprint
+    createBlueprint: (name, parentClass, path) => ipcRenderer.invoke('ue:create-blueprint', name, parentClass, path),
+    openBlueprint: (assetPath) => ipcRenderer.invoke('ue:open-blueprint', assetPath),
+    // Level
+    spawnActor: (actorType, name, location) => ipcRenderer.invoke('ue:spawn-actor', actorType, name, location),
+    getLevelActors: () => ipcRenderer.invoke('ue:get-level-actors'),
+    // Editor
+    saveAll: () => ipcRenderer.invoke('ue:save-all'),
+    playInEditor: () => ipcRenderer.invoke('ue:play-in-editor'),
+    stopPlayInEditor: () => ipcRenderer.invoke('ue:stop-play-in-editor'),
+    compileProject: () => ipcRenderer.invoke('ue:compile-project'),
+    getProjectInfo: () => ipcRenderer.invoke('ue:get-project-info'),
+    // Assets
+    getAssets: (path, type) => ipcRenderer.invoke('ue:get-assets', path, type),
+  },
 };
 
 // Expose the API to the renderer process

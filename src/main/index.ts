@@ -7,7 +7,8 @@ import { HotkeyManager } from './services/hotkeyManager';
 import { AIClientService } from './services/aiClient';
 import { StorageService } from './services/storageService';
 import { AgentExecutor } from './services/agentExecutor';
-import type { AIRequest, CaptureMode, Session, UserSettings, HotkeyConfig, ActionPlanRequest, AgentAction } from '../shared/types';
+import { UECommandService } from './services/ueCommandService';
+import type { AIRequest, CaptureMode, Session, UserSettings, HotkeyConfig, ActionPlanRequest, AgentAction, UECommandType } from '../shared/types';
 
 class GorkaCopilotApp {
   private windowManager: WindowManager;
@@ -17,6 +18,7 @@ class GorkaCopilotApp {
   private aiClient: AIClientService;
   private storageService: StorageService;
   private agentExecutor: AgentExecutor;
+  private ueCommandService: UECommandService;
 
   constructor() {
     this.windowManager = new WindowManager();
@@ -26,6 +28,7 @@ class GorkaCopilotApp {
     this.aiClient = new AIClientService();
     this.storageService = new StorageService();
     this.agentExecutor = new AgentExecutor();
+    this.ueCommandService = new UECommandService(this.webSocketServer);
   }
 
   async initialize(): Promise<void> {
@@ -350,6 +353,59 @@ class GorkaCopilotApp {
     ipcMain.on('agent:stop', () => {
       console.log('[Main] agent:stop called');
       this.agentExecutor.stop();
+    });
+
+    // ===== Unreal Engine Command Handlers =====
+    console.log('[Main] UE command handlers registered');
+
+    ipcMain.handle('ue:is-connected', () => {
+      return this.ueCommandService.isConnected();
+    });
+
+    ipcMain.handle('ue:execute-command', async (_event, command: UECommandType, params: Record<string, unknown>) => {
+      console.log('[Main] ue:execute-command called:', command, params);
+      return this.ueCommandService.executeCommand(command, params);
+    });
+
+    // Convenience handlers for common operations
+    ipcMain.handle('ue:create-blueprint', async (_event, name: string, parentClass?: string, path?: string) => {
+      return this.ueCommandService.createBlueprint(name, parentClass, path);
+    });
+
+    ipcMain.handle('ue:open-blueprint', async (_event, assetPath: string) => {
+      return this.ueCommandService.openBlueprint(assetPath);
+    });
+
+    ipcMain.handle('ue:spawn-actor', async (_event, actorType: string, name?: string, location?: { x: number; y: number; z: number }) => {
+      return this.ueCommandService.spawnActor(actorType, name, location);
+    });
+
+    ipcMain.handle('ue:get-level-actors', async () => {
+      return this.ueCommandService.getLevelActors();
+    });
+
+    ipcMain.handle('ue:save-all', async () => {
+      return this.ueCommandService.saveAll();
+    });
+
+    ipcMain.handle('ue:play-in-editor', async () => {
+      return this.ueCommandService.playInEditor();
+    });
+
+    ipcMain.handle('ue:stop-play-in-editor', async () => {
+      return this.ueCommandService.stopPlayInEditor();
+    });
+
+    ipcMain.handle('ue:compile-project', async () => {
+      return this.ueCommandService.compileProject();
+    });
+
+    ipcMain.handle('ue:get-project-info', async () => {
+      return this.ueCommandService.getProjectInfo();
+    });
+
+    ipcMain.handle('ue:get-assets', async (_event, path?: string, type?: string) => {
+      return this.ueCommandService.getAssets(path, type);
     });
   }
 

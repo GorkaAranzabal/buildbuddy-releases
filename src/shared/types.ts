@@ -87,6 +87,53 @@ export interface UnrealContext {
   lastUpdate: number;
 }
 
+// ===== Unreal Engine Commands =====
+
+export interface UECommand {
+  type: 'command';
+  id: string;
+  command: string;
+  params: Record<string, unknown>;
+}
+
+export interface UECommandResult {
+  type: 'command_result';
+  command_id: string;
+  success: boolean;
+  message?: string;
+  error?: string;
+  data?: Record<string, unknown>;
+}
+
+// Available UE commands
+export type UECommandType =
+  // Blueprint
+  | 'create_blueprint'
+  | 'open_blueprint'
+  | 'add_component_to_blueprint'
+  | 'add_variable_to_blueprint'
+  | 'compile_blueprint'
+  // C++
+  | 'create_cpp_class'
+  | 'open_source_file'
+  // Level
+  | 'spawn_actor'
+  | 'delete_actor'
+  | 'get_level_actors'
+  | 'select_actor'
+  // Assets
+  | 'get_assets'
+  | 'browse_to_asset'
+  | 'import_asset'
+  | 'delete_asset'
+  // Editor
+  | 'play_in_editor'
+  | 'stop_play_in_editor'
+  | 'save_all'
+  | 'compile_project'
+  | 'get_project_info'
+  | 'execute_console_command';
+
 // ===== Screenshot Types =====
 
 export type CaptureMode = 'fullscreen' | 'window' | 'region';
@@ -236,11 +283,13 @@ export type AgentAction =
   | { type: 'click'; x: number; y: number }
   | { type: 'double_click'; x: number; y: number }
   | { type: 'right_click'; x: number; y: number }
-  | { type: 'click_element'; description: string; elementType?: string } // NEW: Click UI element by description
+  | { type: 'click_element'; description: string; elementType?: string }
   | { type: 'type_text'; text: string }
   | { type: 'key_press'; keys: string }
   | { type: 'wait'; ms: number }
-  | { type: 'done'; reason: string };
+  | { type: 'done'; reason: string }
+  // Unreal Engine specific actions
+  | { type: 'ue_command'; command: UECommandType; params: Record<string, unknown> };
 
 export interface ActionPlan {
   goal: string;

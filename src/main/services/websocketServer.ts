@@ -9,10 +9,13 @@ import type {
   LogEntryEvent,
   ProjectInfoEvent,
   UnrealContext,
+  UECommand,
+  UECommandResult,
 } from '../../shared/types';
 
 type StatusChangeCallback = (status: ConnectionStatus, client: ConnectorClient | null) => void;
 type ContextUpdateCallback = (context: UnrealContext) => void;
+type CommandResultCallback = (result: UECommandResult) => void;
 
 export class WebSocketServer {
   private server: WSServer | null = null;
@@ -21,6 +24,14 @@ export class WebSocketServer {
 
   private statusChangeCallbacks: StatusChangeCallback[] = [];
   private contextUpdateCallbacks: ContextUpdateCallback[] = [];
+  private commandResultCallbacks: CommandResultCallback[] = [];
+
+  // Pending commands waiting for results
+  private pendingCommands: Map<string, {
+    resolve: (result: UECommandResult) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+  }> = new Map();
 
   // Current context state
   private currentContext: UnrealContext = {
@@ -32,6 +43,7 @@ export class WebSocketServer {
 
   // Log buffer
   private readonly MAX_LOG_BUFFER = 200;
+  private readonly COMMAND_TIMEOUT_MS = 30000; // 30 second timeout for commands
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -156,8 +168,29 @@ export class WebSocketServer {
         client.lastHeartbeat = Date.now();
         break;
 
+      case 'command_result':
+        this.handleCommandResult(event as unknown as UECommandResult);
+        break;
+
       default:
         console.warn(`Unknown event type: ${event.type}`);
+    }
+  }
+
+  private handleCommandResult(result: UECommandResult): void {
+    console.log('[WebSocket] Received command result:', result.command_id, result.success ? '✅' : '❌');
+    
+    // Resolve pending command promise
+    const pending = this.pendingCommands.get(result.command_id);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      this.pendingCommands.delete(result.command_id);
+      pending.resolve(result);
+    }
+
+    // Notify callbacks
+    for (const callback of this.commandResultCallbacks) {
+      callback(result);
     }
   }
 
@@ -231,6 +264,60 @@ export class WebSocketServer {
     return { ...this.currentContext };
   }
 
+  isUnrealConnected(): boolean {
+    return this.clients.size > 0;
+  }
+
+  /**
+   * Send a command to Unreal Engine and wait for the result
+   */
+  async sendCommand(command: string, params: Record<string, unknown> = {}): Promise<UECommandResult> {
+    if (this.clients.size === 0) {
+      throw new Error('No Unreal Engine client connected');
+    }
+
+    const commandId = uuidv4();
+    const message: UECommand = {
+      type: 'command',
+      id: commandId,
+      command,
+      params,
+    };
+
+    console.log('[WebSocket] Sending command to UE:', command, commandId);
+
+    return new Promise((resolve, reject) => {
+      // Set up timeout
+      const timeout = setTimeout(() => {
+        this.pendingCommands.delete(commandId);
+        reject(new Error(`Command '${command}' timed out after ${this.COMMAND_TIMEOUT_MS}ms`));
+      }, this.COMMAND_TIMEOUT_MS);
+
+      // Store pending command
+      this.pendingCommands.set(commandId, { resolve, reject, timeout });
+
+      // Send to all connected clients (usually just one UE instance)
+      this.broadcast(message);
+    });
+  }
+
+  /**
+   * Send a command without waiting for result (fire and forget)
+   */
+  sendCommandAsync(command: string, params: Record<string, unknown> = {}): string {
+    const commandId = uuidv4();
+    const message: UECommand = {
+      type: 'command',
+      id: commandId,
+      command,
+      params,
+    };
+
+    console.log('[WebSocket] Sending async command to UE:', command, commandId);
+    this.broadcast(message);
+    return commandId;
+  }
+
   // Event handlers
   onStatusChange(callback: StatusChangeCallback): void {
     this.statusChangeCallbacks.push(callback);
@@ -238,6 +325,10 @@ export class WebSocketServer {
 
   onContextUpdate(callback: ContextUpdateCallback): void {
     this.contextUpdateCallbacks.push(callback);
+  }
+
+  onCommandResult(callback: CommandResultCallback): void {
+    this.commandResultCallbacks.push(callback);
   }
 
   private notifyStatusChange(status: ConnectionStatus, client: ConnectorClient | null): void {
