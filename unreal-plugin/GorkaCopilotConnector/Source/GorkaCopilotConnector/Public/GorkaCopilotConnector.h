@@ -12,6 +12,18 @@ public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 
+	/** Get the module instance */
+	static FGorkaCopilotConnectorModule& Get()
+	{
+		return FModuleManager::GetModuleChecked<FGorkaCopilotConnectorModule>("GorkaCopilotConnector");
+	}
+
+	/** Check if module is loaded */
+	static bool IsAvailable()
+	{
+		return FModuleManager::Get().IsModuleLoaded("GorkaCopilotConnector");
+	}
+
 private:
 	/** Handle to the log capture output device */
 	TSharedPtr<class FGorkaLogOutputDevice> LogOutputDevice;
@@ -21,4 +33,7 @@ private:
 	
 	/** Handle to the error parser */
 	TSharedPtr<class FGorkaErrorParser> ErrorParser;
+
+	/** Handle to the command handler */
+	TSharedPtr<class FGorkaCommandHandler> CommandHandler;
 };

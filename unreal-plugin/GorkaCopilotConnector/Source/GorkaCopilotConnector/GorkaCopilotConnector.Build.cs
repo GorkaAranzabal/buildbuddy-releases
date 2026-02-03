@@ -27,7 +27,8 @@ public class GorkaCopilotConnector : ModuleRules
 				"DeveloperSettings",
 				"WebSockets",
 				"Json",
-				"JsonUtilities"
+				"JsonUtilities",
+				"InputCore"
 			}
 		);
 			
@@ -37,7 +38,18 @@ public class GorkaCopilotConnector : ModuleRules
 				"Slate",
 				"SlateCore",
 				"UnrealEd",
-				"Projects"
+				"Projects",
+				"AssetTools",
+				"AssetRegistry",
+				"Kismet",
+				"BlueprintGraph",
+				"KismetCompiler",
+				"ContentBrowser",
+				"LevelEditor",
+				"EditorSubsystem",
+				"GameProjectGeneration",
+				"HotReload",
+				"SourceControl"
 			}
 		);
 		

@@ -5,6 +5,7 @@
 #include "LogCapture.h"
 #include "ErrorParser.h"
 #include "WebSocketClient.h"
+#include "CommandHandler.h"
 #include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "FGorkaCopilotConnectorModule"
@@ -20,6 +21,9 @@ void FGorkaCopilotConnectorModule::StartupModule()
 
 	// Create error parser
 	ErrorParser = MakeShared<FGorkaErrorParser>();
+
+	// Create command handler
+	CommandHandler = MakeShared<FGorkaCommandHandler>();
 
 	// Create WebSocket client
 	WebSocketClient = MakeShared<FGorkaWebSocketClient>();
@@ -50,13 +54,43 @@ void FGorkaCopilotConnectorModule::StartupModule()
 		}
 	});
 
+	// Connect WebSocket messages to command handler
+	WebSocketClient->OnMessageReceived.AddLambda([this](const FString& Message)
+	{
+		TSharedPtr<FJsonObject> JsonObject;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Message);
+
+		if (FJsonSerializer::Deserialize(Reader, JsonObject) && JsonObject.IsValid())
+		{
+			FString Type = JsonObject->GetStringField(TEXT("type"));
+			
+			// Handle commands from desktop app
+			if (Type == TEXT("command"))
+			{
+				if (CommandHandler.IsValid())
+				{
+					CommandHandler->ProcessCommand(JsonObject);
+				}
+			}
+		}
+	});
+
+	// Connect command results to WebSocket
+	CommandHandler->OnCommandResult.AddLambda([this](const FString& CommandId, const TSharedPtr<FJsonObject>& Result)
+	{
+		if (WebSocketClient.IsValid() && WebSocketClient->IsConnected() && Result.IsValid())
+		{
+			WebSocketClient->SendEvent(Result);
+		}
+	});
+
 	// Auto-connect if enabled
 	if (Settings->bAutoConnect)
 	{
 		WebSocketClient->Connect();
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("Gorka Copilot Connector module started"));
+	UE_LOG(LogTemp, Log, TEXT("Gorka Copilot Connector module started (with command handler)"));
 }
 
 void FGorkaCopilotConnectorModule::ShutdownModule()
@@ -77,6 +111,9 @@ void FGorkaCopilotConnectorModule::ShutdownModule()
 
 	// Clear error parser
 	ErrorParser.Reset();
+
+	// Clear command handler
+	CommandHandler.Reset();
 
 	UE_LOG(LogTemp, Log, TEXT("Gorka Copilot Connector module shut down"));
 }
