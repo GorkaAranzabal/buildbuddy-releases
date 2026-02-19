@@ -1,17 +1,60 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useAppStore } from './store';
 import { NotchBar, RobotStatus } from './components/layout/NotchBar';
 import { ExpandedPanel } from './components/layout/ExpandedPanel';
 import { SettingsPanel } from './components/layout/SettingsPanel';
+import { LoginScreen } from './components/auth/LoginScreen';
 
-type ViewMode = 'collapsed' | 'chat' | 'settings';
+type ViewMode = 'collapsed' | 'chat' | 'settings' | 'login';
 
 function App() {
-  const { isCollapsed, setCollapsed, setConnectorStatus, setCurrentContext, setSettings, setHotkeyConfig, isLoading, messages } =
-    useAppStore();
+  const {
+    isCollapsed, setCollapsed, setConnectorStatus, setCurrentContext,
+    setSettings, setHotkeyConfig, isLoading, messages,
+    setAuthState, setDailyUsage, clearAuth,
+    setUnrealMCPStatus,
+  } = useAppStore();
   const [isReady, setIsReady] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('collapsed');
-  const isExpanded = viewMode !== 'collapsed';
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const isExpanded = viewMode !== 'collapsed' && viewMode !== 'login';
+
+  // Track vignette state to handle show/hide properly
+  const vignetteShownRef = useRef(false);
+
+  // Handle full-screen vignette visibility via IPC
+  useEffect(() => {
+    if (!window.electronAPI?.vignette) return;
+
+    if (isLoading && !vignetteShownRef.current) {
+      vignetteShownRef.current = true;
+      window.electronAPI.vignette.show();
+    } else if (!isLoading && vignetteShownRef.current) {
+      vignetteShownRef.current = false;
+      window.electronAPI.vignette.hide();
+    }
+  }, [isLoading]);
+
+  // Initialize the rest of the app (settings, hotkeys, connector)
+  const initializeAppServices = async () => {
+    const settings = await window.electronAPI.settings.get();
+    setSettings(settings);
+
+    const hotkeyConfig = await window.electronAPI.settings.getHotkeys();
+    setHotkeyConfig(hotkeyConfig);
+
+    const connectorStatus = await window.electronAPI.connector.getStatus();
+    setConnectorStatus(connectorStatus.status, connectorStatus.client);
+
+    const context = await window.electronAPI.connector.getContext();
+    if (context) {
+      setCurrentContext(context);
+    }
+
+    const usage = await window.electronAPI.auth.getUsage();
+    setDailyUsage(usage);
+  };
 
   useEffect(() => {
     // Check if electronAPI is available
@@ -24,24 +67,21 @@ function App() {
     // Initialize app state from main process
     const initializeApp = async () => {
       try {
-        // Get initial settings
-        const settings = await window.electronAPI.settings.get();
-        setSettings(settings);
+        // Check auth state FIRST
+        const auth = await window.electronAPI.auth.getState();
+        setAuthState(auth);
 
-        // Get hotkey config
-        const hotkeyConfig = await window.electronAPI.settings.getHotkeys();
-        setHotkeyConfig(hotkeyConfig);
-
-        // Get initial connector status
-        const connectorStatus = await window.electronAPI.connector.getStatus();
-        setConnectorStatus(connectorStatus.status, connectorStatus.client);
-
-        // Get initial context if connected
-        const context = await window.electronAPI.connector.getContext();
-        if (context) {
-          setCurrentContext(context);
+        if (!auth.isLoggedIn) {
+          // Not logged in - show login, expand window
+          setViewMode('login');
+          setCollapsed(false);
+          window.electronAPI?.window.collapse(false);
+          setIsReady(true);
+          return;
         }
 
+        // Logged in - initialize services
+        await initializeAppServices();
         setIsReady(true);
       } catch (err) {
         console.error('Failed to initialize app:', err);
@@ -60,9 +100,19 @@ function App() {
       setCurrentContext(context);
     });
 
-    // Listen for focus-input hotkey to expand
+    // Subscribe to MCP status updates
+    const unsubscribeMCPStatus = window.electronAPI.unrealMcp.onStatusChange((status) => {
+      setUnrealMCPStatus(status);
+    });
+    window.electronAPI.unrealMcp.getStatus().then(setUnrealMCPStatus);
+
+    // Listen for focus-input hotkey to expand (always expand, don't toggle)
     const unsubscribeFocus = window.electronAPI.onFocusInput(() => {
-      handleToggleExpanded();
+      setViewMode((current) => {
+        if (current === 'login') return current; // Don't switch away from login
+        return 'chat';
+      });
+      setCollapsed(false);
     });
 
     // Cleanup
@@ -70,8 +120,37 @@ function App() {
       unsubscribeConnectorStatus();
       unsubscribeContextUpdate();
       unsubscribeFocus();
+      unsubscribeMCPStatus();
     };
-  }, [setCollapsed, setConnectorStatus, setCurrentContext, setSettings, setHotkeyConfig]);
+  }, [setCollapsed, setConnectorStatus, setCurrentContext, setSettings, setHotkeyConfig, setAuthState, setDailyUsage, setUnrealMCPStatus]);
+
+  const handleLogin = async (email: string) => {
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      const authResult = await window.electronAPI.auth.login(email);
+      setAuthState(authResult);
+
+      // Initialize the rest of the app
+      await initializeAppServices();
+
+      setViewMode('collapsed');
+      setCollapsed(true);
+      window.electronAPI?.window.collapse(true);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'Failed to sign in');
+    }
+    setIsLoggingIn(false);
+  };
+
+  const handleLogout = async () => {
+    await window.electronAPI.auth.logout();
+    clearAuth();
+    window.electronAPI?.window.exitSettings();
+    setViewMode('login');
+    setCollapsed(false);
+    window.electronAPI?.window.collapse(false);
+  };
 
   const handleToggleExpanded = () => {
     if (viewMode === 'collapsed') {
@@ -89,6 +168,7 @@ function App() {
     setViewMode('settings');
     setCollapsed(false);
     window.electronAPI?.window.collapse(false);
+    window.electronAPI?.window.enterSettings();
   };
 
   const handleClose = () => {
@@ -99,13 +179,14 @@ function App() {
 
   const handleBackToChat = () => {
     setViewMode('chat');
+    window.electronAPI?.window.exitSettings();
   };
 
   // Determine robot status based on the conversation
   const robotStatus: RobotStatus = useMemo(() => {
     // If loading, NotchBar will show thinking automatically
     if (isLoading) return 'idle'; // NotchBar handles this with isLoading prop
-    
+
     // Check the last assistant message for errors
     const lastMessage = messages[messages.length - 1];
     if (lastMessage?.role === 'assistant') {
@@ -115,10 +196,9 @@ function App() {
         return 'error';
       }
       // If we just got a successful response, show success briefly
-      // (This could be enhanced with a timeout to go back to idle)
       return 'success';
     }
-    
+
     return 'idle';
   }, [messages, isLoading]);
 
@@ -126,7 +206,7 @@ function App() {
   if (!isReady) {
     return (
       <div className="w-full h-full flex items-center justify-center">
-        <div 
+        <div
           className="flex items-center gap-2 px-4 py-2 rounded-full"
           style={{
             background: 'rgba(0, 0, 0, 0.75)',
@@ -142,14 +222,25 @@ function App() {
 
   return (
     <div className="w-full h-full flex flex-col items-center pt-0">
-      {/* Notch Bar - Always visible */}
-      <NotchBar
-        isExpanded={isExpanded}
-        onToggle={handleToggleExpanded}
-        onSettings={handleOpenSettings}
-        isLoading={isLoading}
-        robotStatus={robotStatus}
-      />
+      {/* Notch Bar - Hidden during login */}
+      {viewMode !== 'login' && (
+        <NotchBar
+          isExpanded={isExpanded}
+          onToggle={handleToggleExpanded}
+          onSettings={handleOpenSettings}
+          isLoading={isLoading}
+          robotStatus={robotStatus}
+        />
+      )}
+
+      {/* Login Screen */}
+      {viewMode === 'login' && (
+        <LoginScreen
+          onLogin={handleLogin}
+          isLoading={isLoggingIn}
+          error={loginError}
+        />
+      )}
 
       {/* Chat Panel - Shows when in chat mode */}
       {viewMode === 'chat' && (
@@ -158,7 +249,7 @@ function App() {
 
       {/* Settings Panel - Shows when in settings mode */}
       {viewMode === 'settings' && (
-        <SettingsPanel onClose={handleClose} onBack={handleBackToChat} />
+        <SettingsPanel onClose={handleClose} onBack={handleBackToChat} onLogout={handleLogout} />
       )}
     </div>
   );

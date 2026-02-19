@@ -5,6 +5,7 @@ import { StreamingMessage } from '../chat/StreamingMessage';
 import { ActionPlanModal } from '../agent/ActionPlanModal';
 import { ExecutionOverlay } from '../agent/ExecutionOverlay';
 import { PermissionModal } from '../agent/PermissionModal';
+import { UpgradePrompt } from '../auth/UpgradePrompt';
 import type { ChatMessage, ActionPlan, ExecutionProgress, CaptureResult } from '../../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -18,8 +19,9 @@ const QUICK_ACTIONS = [
   { id: 'recap', label: 'Recap', icon: '↻' },
 ];
 
-// Config flag
-const enableDoItForMe = true;
+// Config flags - set to false to disable features
+const enableDoItForMe = false;
+const enableQuickActions = false;
 
 export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
   const [input, setInput] = useState('');
@@ -34,6 +36,9 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [permissionPlatform, setPermissionPlatform] = useState('');
   const [lastScreenshot, setLastScreenshot] = useState<CaptureResult | null>(null);
+  const [showUpgradePrompt, setShowUpgradePrompt] = useState(false);
+  const [upgradeMessage, setUpgradeMessage] = useState('');
+  const [updateReady, setUpdateReady] = useState(false);
   const escPressCount = useRef(0);
   const escResetTimer = useRef<NodeJS.Timeout | null>(null);
   
@@ -47,6 +52,10 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
     setStreamingResponse,
     appendStreamingResponse,
     setAttachedScreenshot,
+    authState,
+    dailyUsage,
+    setDailyUsage,
+    unrealMCPStatus,
   } = useAppStore();
 
   // Keep ref in sync with state
@@ -56,11 +65,37 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
 
   const hasMessages = messages.length > 0 || streamingResponse;
 
-  // Auto-resize textarea
+  // Auto-expand window to conversation size when first message arrives
+  useEffect(() => {
+    if (hasMessages) {
+      window.electronAPI?.window.growForConversation();
+    }
+  }, [!!hasMessages]);
+
+  // Auto-focus textarea on mount
+  useEffect(() => {
+    // Small delay to ensure the component is fully rendered
+    const timer = setTimeout(() => {
+      textareaRef.current?.focus();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Listen for auto-update ready
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.updater.onUpdateReady(() => {
+      setUpdateReady(true);
+    });
+    return unsubscribe;
+  }, []);
+
+  // Auto-resize textarea — only measure scrollHeight when there's actual content,
+  // otherwise the placeholder text causes Chromium to report a 2-row scrollHeight.
   useEffect(() => {
     const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    if (input) {
       textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
     }
   }, [input]);
@@ -95,6 +130,14 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
       console.error('AI error:', error.message);
       setLoading(false);
       setStreamingResponse('');
+
+      // Check if this is an entitlement limit error
+      if (error.type === 'entitlement_limit') {
+        setUpgradeMessage(error.message);
+        setShowUpgradePrompt(true);
+        return;
+      }
+
       const errorMessage: ChatMessage = {
         id: uuidv4(),
         role: 'assistant',
@@ -192,8 +235,38 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [actionPlan, showPermissionModal, executionProgress]);
 
+  // Detect when user is asking us to DO something in UE (imperative) vs asking a question
+  const isImperativeMCPRequest = (text: string): boolean => {
+    const lower = text.toLowerCase().trim();
+    // Skip obvious questions
+    if (/^(how|what|why|when|where|which|who|is |are |does |did |can you explain|tell me|explain|show me how)/.test(lower)) return false;
+    // Match action imperatives
+    return (
+      /\bdo it\b/.test(lower) ||
+      /\bdo this\b/.test(lower) ||
+      /\bfor me\b/.test(lower) && /\b(make|create|build|add|implement|execute|run|place|delete|remove|spawn|do|set up|modify|change|update|generate)\b/.test(lower) ||
+      /^(make|create|build|add|implement|execute|run|place|delete|remove|spawn|modify|change|update|generate|set up)\s+(it|this|that|a |an |the |me )\b/.test(lower) ||
+      /\b(make|create|build|add|implement|place|delete|remove|spawn)\s+(it|this|that)\b/.test(lower) ||
+      /\bgo ahead\b/.test(lower) ||
+      /\bjust do( it)?\b/.test(lower)
+    );
+  };
+
   const handleSend = async (prompt: string) => {
     if (!prompt.trim() || isLoading) return;
+
+    // Check entitlement before sending
+    try {
+      const canAskResult = await window.electronAPI.auth.checkCanAsk();
+      if (!canAskResult.allowed) {
+        setUpgradeMessage(canAskResult.reason || '');
+        setShowUpgradePrompt(true);
+        return;
+      }
+    } catch (err) {
+      console.error('Entitlement check failed:', err);
+      // Allow ask to proceed on error (graceful degradation)
+    }
 
     // Auto-capture screenshot before sending
     let screenshot = null;
@@ -223,20 +296,87 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
     };
     addMessage(userMessage);
 
+    setInput('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+
+    // ── MCP Execute path ────────────────────────────────────────────────────
+    // If the user typed an action command AND MCP is connected, execute it
+    // directly in Unreal Engine via Python instead of the normal chat flow.
+    if (unrealMCPStatus === 'connected' && isImperativeMCPRequest(prompt)) {
+      console.log('[MCP] Imperative detected, routing to MCP execution');
+      setLoading(true);
+      setStreamingResponse('⚡ Making it happen in Unreal Engine...');
+
+      // Build conversation history from previous messages
+      const conversationHistory = messages.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+
+      try {
+        const result = await (window.electronAPI.unrealMcp as any).executeIntent({
+          conversationHistory,
+          intent: prompt,
+        });
+
+        setStreamingResponse('');
+
+        const responseContent = result.success
+          ? 'Done! I executed that in Unreal Engine.'
+          : `**Execution failed:** ${result.error || 'Unknown error'}`;
+
+        addMessage({
+          id: uuidv4(),
+          role: 'assistant',
+          content: responseContent,
+          timestamp: Date.now(),
+        });
+      } catch (err) {
+        setStreamingResponse('');
+        addMessage({
+          id: uuidv4(),
+          role: 'assistant',
+          content: `**Error:** ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: Date.now(),
+        });
+      } finally {
+        setLoading(false);
+        try {
+          await window.electronAPI.auth.recordAsk();
+          const usage = await window.electronAPI.auth.getUsage();
+          setDailyUsage(usage);
+        } catch { /* ignore */ }
+      }
+      return;
+    }
+    // ── Normal chat path ────────────────────────────────────────────────────
+
     setStreamingResponse('');
     setLoading(true);
 
-    console.log('Sending to AI with screenshot:', !!screenshot);
+    // Build conversation history from previous messages
+    const conversationHistory = messages.map(msg => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+
+    console.log('Sending to AI with screenshot:', !!screenshot, 'history length:', conversationHistory.length);
     window.electronAPI.ai.ask({
       prompt,
       context: currentContext,
       screenshot,
       mode: 'general',
+      conversationHistory,
     });
 
-    setInput('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+    // Update usage count after sending
+    try {
+      const usage = await window.electronAPI.auth.getUsage();
+      setDailyUsage(usage);
+    } catch (err) {
+      console.error('Failed to update usage:', err);
     }
   };
 
@@ -395,14 +535,13 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
 
   return (
     <>
-      <div 
-        className="mt-2 rounded-2xl border border-white/[0.12] overflow-hidden"
+      <div
+        className="relative mt-2 rounded-2xl border border-white/[0.12] overflow-hidden flex flex-col w-full"
         style={{
-          background: 'rgba(0, 0, 0, 0.55)',
+          background: 'rgba(0, 0, 0, 0.78)',
           backdropFilter: 'blur(80px) saturate(200%)',
           WebkitBackdropFilter: 'blur(80px) saturate(200%)',
-          width: '480px',
-          maxHeight: '500px',
+          maxHeight: 'calc(100vh - 52px)',
         }}
       >
         {/* Close button */}
@@ -415,9 +554,22 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
           </svg>
         </button>
 
+        {/* Update banner */}
+        {updateReady && (
+          <div className="flex items-center justify-between px-4 py-2 bg-blue-500/10 border-b border-blue-500/20">
+            <span className="text-blue-300 text-xs">A new version is available</span>
+            <button
+              onClick={() => window.electronAPI.updater.install()}
+              className="px-2.5 py-1 bg-blue-500 hover:bg-blue-400 rounded-md text-white text-[11px] font-medium transition-all"
+            >
+              Restart to Update
+            </button>
+          </div>
+        )}
+
         {/* Messages area (only if there are messages) */}
         {hasMessages && (
-          <div className="max-h-[300px] overflow-y-auto px-4 py-3 space-y-3">
+          <div className="overflow-y-auto px-4 py-3 space-y-3" style={{ maxHeight: 'calc(100vh - 210px)' }}>
             {messages.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}
@@ -427,44 +579,68 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
         )}
 
         {/* Quick actions */}
-        <div className="flex items-center gap-2 px-4 py-3 border-t border-white/[0.08]">
-          {QUICK_ACTIONS.map((action) => (
-            <button
-              key={action.id}
-              onClick={() => handleQuickAction(action.id)}
-              disabled={isBusy}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-white/80 text-xs font-medium transition-all disabled:opacity-50 whitespace-nowrap"
-            >
-              <span>{action.icon}</span>
-              <span>{action.label}</span>
-            </button>
-          ))}
-          
-          {/* Do it for me button */}
-          {enableDoItForMe && messages.length > 0 && (
-            <button
-              onClick={handleDoItForMe}
-              disabled={isBusy}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gradient-to-r from-purple-500/20 to-blue-500/20 hover:from-purple-500/30 hover:to-blue-500/30 border border-purple-400/30 text-purple-300 text-xs font-medium transition-all disabled:opacity-50 whitespace-nowrap ml-auto"
-              title="Let BuildBuddy execute actions for you"
-            >
-              {isPlanning ? (
-                <>
-                  <div className="w-3 h-3 border border-purple-300 border-t-transparent rounded-full animate-spin" />
-                  <span>Planning...</span>
-                </>
-              ) : (
-                <>
-                  <span>🪄</span>
-                  <span>Do it for me</span>
-                </>
-              )}
-            </button>
-          )}
-        </div>
+        {(enableQuickActions || enableDoItForMe) && (
+          <div className="flex items-center gap-2 px-4 py-3 border-t border-white/[0.08]">
+            {enableQuickActions && QUICK_ACTIONS.map((action) => (
+              <button
+                key={action.id}
+                onClick={() => handleQuickAction(action.id)}
+                disabled={isBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-white/80 text-xs font-medium transition-all disabled:opacity-50 whitespace-nowrap"
+              >
+                <span>{action.icon}</span>
+                <span>{action.label}</span>
+              </button>
+            ))}
+
+            {/* Do it for me button */}
+            {enableDoItForMe && messages.length > 0 && (
+              <button
+                onClick={handleDoItForMe}
+                disabled={isBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gradient-to-r from-purple-500/20 to-blue-500/20 hover:from-purple-500/30 hover:to-blue-500/30 border border-purple-400/30 text-purple-300 text-xs font-medium transition-all disabled:opacity-50 whitespace-nowrap ml-auto"
+                title="Let BuildBuddy execute actions for you"
+              >
+                {isPlanning ? (
+                  <>
+                    <div className="w-3 h-3 border border-purple-300 border-t-transparent rounded-full animate-spin" />
+                    <span>Planning...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>🪄</span>
+                    <span>Do it for me</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Upgrade Prompt */}
+        {showUpgradePrompt && (
+          <UpgradePrompt
+            message={upgradeMessage}
+            onDismiss={() => setShowUpgradePrompt(false)}
+          />
+        )}
+
+        {/* Remaining asks counter for free users */}
+        {authState?.entitlement && !authState.entitlement.features.unlimited_asks && !showUpgradePrompt && (
+          <div className="px-4 py-1">
+            <span className="text-white/30 text-xs">
+              {(() => {
+                const limit = authState.entitlement.features.daily_limit ?? 10;
+                const used = dailyUsage?.askCount ?? 0;
+                const remaining = Math.max(0, limit - used);
+                return `${remaining} ask${remaining !== 1 ? 's' : ''} remaining this week`;
+              })()}
+            </span>
+          </div>
+        )}
 
         {/* Input area */}
-        <div className="px-4 pb-4">
+        <div className="px-4 pb-4 pt-3 border-t border-white/[0.08]">
           <div className="flex items-end gap-2">
             <div className="flex-1 relative">
               <textarea
@@ -472,10 +648,10 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask about your screen or conversation, or ⌘ ↵ for Assist"
+                placeholder="Ask about your screen, or ⌘↵ to Assist"
                 disabled={isBusy}
                 rows={1}
-                className="w-full px-4 py-3 bg-white/[0.04] border border-white/[0.1] rounded-xl text-sm text-white/95 placeholder-white/40 resize-none focus:outline-none focus:border-white/20 disabled:opacity-50 transition-all"
+                className="w-full px-4 py-2 bg-white/[0.04] border border-white/[0.1] rounded-xl text-sm text-white/95 placeholder-white/40 resize-none focus:outline-none focus:border-white/20 disabled:opacity-50 transition-all hide-scrollbar"
               />
             </div>
 

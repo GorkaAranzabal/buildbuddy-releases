@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useCallback } from 'react';
 import robotIdleImg from '../../assets/robot-idle.png';
 import robotThinkingImg from '../../assets/robot-thinking.png';
 import robotErrorImg from '../../assets/robot-error.png';
@@ -27,15 +27,43 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
   const currentStatus: RobotStatus = isLoading ? 'thinking' : robotStatus;
   const robotImage = robotImages[currentStatus];
 
+  const dragHandleRef = useRef<HTMLDivElement>(null);
+
+  const handleDragStart = useCallback(() => {
+    dragHandleRef.current?.classList.add('is-dragging');
+    const onUp = () => {
+      dragHandleRef.current?.classList.remove('is-dragging');
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mouseup', onUp);
+  }, []);
+
   return (
     <div 
       className="flex items-center gap-1 px-1.5 py-1.5 rounded-full border border-white/[0.12] drag-region"
       style={{
-        background: 'rgba(0, 0, 0, 0.65)',
+        background: 'rgba(0, 0, 0, 0.78)',
         backdropFilter: 'blur(80px) saturate(200%)',
         WebkitBackdropFilter: 'blur(80px) saturate(200%)',
       }}
     >
+      {/* Drag Handle (leftmost) - visual affordance for moving the notch */}
+      <div
+        ref={dragHandleRef}
+        className="drag-handle flex items-center justify-center w-4 h-full opacity-25 hover:opacity-55 transition-opacity duration-200"
+        onMouseDown={handleDragStart}
+        title="Drag to move"
+      >
+        <svg width="8" height="14" viewBox="0 0 8 14" fill="currentColor" className="text-white">
+          <circle cx="2" cy="2" r="1.4" />
+          <circle cx="6" cy="2" r="1.4" />
+          <circle cx="2" cy="7" r="1.4" />
+          <circle cx="6" cy="7" r="1.4" />
+          <circle cx="2" cy="12" r="1.4" />
+          <circle cx="6" cy="12" r="1.4" />
+        </svg>
+      </div>
+
       {/* Robot Mascot Icon (Left) - Changes based on status */}
       <div className={`w-8 h-8 rounded-full bg-white/[0.08] flex items-center justify-center no-drag overflow-hidden transition-all duration-300 ${isLoading ? 'animate-pulse' : ''}`}>
         <img 

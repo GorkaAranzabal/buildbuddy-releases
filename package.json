@@ -1,7 +1,7 @@
 {
   "name": "gorka-copilot-overlay",
   "productName": "BuildBuddy",
-  "version": "1.0.0",
+  "version": "1.0.9",
   "description": "Desktop overlay assistant for Unreal Engine developers",
   "type": "module",
   "main": "dist/main/index.js",
@@ -16,18 +16,23 @@
     "package": "vite build && electron-builder",
     "package:mac": "vite build && electron-builder --mac --dir",
     "package:win": "vite build && electron-builder --win",
+    "publish": "export $(grep -v '^#' .env.local | xargs) && vite build && electron-builder --publish always",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.17.0",
     "@jitsi/robotjs": "^0.6.21",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "electron-store": "^8.1.0",
+    "electron-updater": "^6.7.3",
     "lowdb": "^7.0.1",
     "openai": "^4.28.0",
+    "posthog-node": "^5.24.17",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^9.0.1",
+    "unreal-remote-execution": "^1.0.0",
     "uuid": "^9.0.1",
     "ws": "^8.16.0",
     "zustand": "^4.5.0"
@@ -66,7 +71,10 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": "dir",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "build/icon.icns",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
@@ -76,7 +84,14 @@
       }
     },
     "win": {
-      "target": "portable"
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "GorkaAranzabal",
+      "repo": "buildbuddy-releases",
+      "releaseType": "draft"
     },
     "extraResources": [
       {

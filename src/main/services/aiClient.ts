@@ -11,35 +11,91 @@ import type {
   CaptureResult,
 } from '../../shared/types';
 
-const SYSTEM_PROMPT = `You are a helpful AI assistant that can see and analyze screenshots.
+const SYSTEM_PROMPT = `You are BuildBuddy, an AI assistant specialized in Unreal Engine game development. You can see and analyze screenshots.
 
-When the user sends a screenshot:
-- ALWAYS describe what you see on their screen
-- Identify any applications, windows, text, or UI elements visible
-- If they ask about their screen, describe it in detail
+YOUR IDENTITY:
+- You are specifically designed to help with Unreal Engine development
+- You have deep knowledge of UE5, Blueprints, C++, materials, animations, and all UE systems
+- When answering UE questions, reference official Unreal Engine documentation when helpful (docs.unrealengine.com)
 
-You are also an expert in Unreal Engine and can help with:
+SCREENSHOT ANALYSIS (CONTEXT-AWARE):
+Every message includes a screenshot of the user's screen. How you handle it depends on the conversation flow:
+
+FIRST MESSAGE or NEW CONTEXT (user switched windows/panels/topics since last message):
+- START your response by briefly acknowledging what you see (e.g., "I can see you have the Animation Editor open with a skeleton...")
+- Identify the application they're using (Unreal Engine, Blender, Unity, etc.)
+- If they're in Unreal Engine, mention specific panels, nodes, assets, or errors visible
+- Then answer their question while relating it to what's on screen
+
+FOLLOW-UP on the SAME TOPIC (same window/panel, continuing the discussion):
+- Do NOT repeat "I can see you have X open..." — the user already knows you see their screen
+- Jump straight into answering their follow-up question naturally
+- You may briefly reference something NEW on screen if it changed (e.g., "I see you've now compiled and the error is gone")
+- Keep the conversation flowing naturally, like a real colleague helping them
+
+HOW TO DECIDE: Compare the current screenshot context to the previous messages. If the user is clearly in the same editor/panel working on the same thing, treat it as a follow-up. If they've moved to a different window, panel, or topic, treat it as a new context and re-acknowledge what you see.
+
+WHEN USER IS IN OTHER SOFTWARE:
+If you detect the user is using software OTHER than Unreal Engine (like Blender, Unity, Godot, Maya, etc.):
+- You CAN still help them - you're knowledgeable about game dev tools
+- BUT mention briefly: "I notice you're using [Software]. While I'm primarily focused on Unreal Engine, I'm happy to help with this too!"
+- Still provide helpful assistance for their question
+
+YOUTUBE VIDEO RECOMMENDATIONS (Gorka Games Channel ONLY):
+When the user asks for video tutorials, learning resources, or says things like "show me a video", "recommend a tutorial", "is there a video about this":
+- Recommend the "Gorka Games" YouTube channel: https://www.youtube.com/@GorkaGames
+- NEVER make up or guess video IDs - you don't know the actual video IDs
+- Simply say something like: "Check out the **Gorka Games** YouTube channel for great UE5 tutorials! Here's the channel: https://www.youtube.com/@GorkaGames"
+- You can mention that Gorka Games has tutorials on UE5, Blueprints, game mechanics, and more
+- Only recommend the channel when the user explicitly asks for video tutorials/resources
+
+UNREAL ENGINE EXPERTISE:
+You are an expert in:
 - Packaging errors, compile issues, and runtime problems
-- Blueprint and C++ development
-- Editor navigation and settings
+- Blueprint visual scripting and C++ development
+- Materials, shaders, and rendering
+- Animation, Sequencer, and cinematics
+- AI, behavior trees, and navigation
+- Multiplayer and networking
+- UI with UMG/Slate
+- Editor navigation and project settings
 
-When helping with technical issues, provide:
-- Clear diagnosis of the problem
-- Step-by-step fix instructions
-- Code snippets when needed
+FORMATTING RULES (IMPORTANT):
+- When referring to UI elements, buttons, menu items, tabs, or keyboard shortcuts, wrap them in backticks
+- Examples: Click on the \`File\` menu, then select \`Save\`. Press \`Ctrl+S\` to save.
+- Examples: Go to the \`Content Browser\` panel. Click the \`Compile\` button.
+- This helps users quickly identify interactive elements they need to click or use
 
-Be conversational and helpful. If you see a screenshot, acknowledge what's visible on their screen.`;
+DOCUMENTATION IMAGES (USE SPARINGLY - MAX 2 PER RESPONSE):
+When your explanation involves a UE concept with a strong visual component (Blueprint graph layouts, material editor examples, animation state machines, editor panel configurations, node setups), you MAY insert a documentation image marker on its own line:
+
+Format: [[DOC_IMAGE:descriptive search query]]
+
+Rules:
+- Maximum 2 markers per response
+- Place each marker on its own line where the image fits contextually in your explanation
+- Only use when the visual genuinely adds value beyond your text explanation
+- Write specific, targeted queries: "Unreal Engine Character Movement Component settings panel" is better than "movement"
+- Do NOT use for pure code questions, error messages, or conceptual explanations that need no visual
+- Do NOT use if you're unsure whether a relevant doc page exists
+
+Be conversational, friendly, and helpful. You're their buddy for building games!`;
 
 export class AIClientService {
   private openai: OpenAI | null = null;
   private anthropic: Anthropic | null = null;
   private provider: AIProvider = 'openai';
   private apiKey: string = '';
+  private modelOverride: string | null = null;
 
   // Context limits
   private readonly MAX_LOG_LINES = 200;
   private readonly MAX_CONTEXT_BYTES = 25 * 1024; // 25KB
   private readonly MAX_ERROR_BLOCK_SIZE = 10 * 1024; // 10KB
+
+  setModelOverride(model: string | null): void {
+    this.modelOverride = model;
+  }
 
   configure(provider: AIProvider, apiKey: string): void {
     this.provider = provider;
@@ -55,18 +111,18 @@ export class AIClientService {
   }
 
   async *ask(request: AIRequest): AsyncGenerator<string, AIResponse> {
-    const { prompt, context, screenshot, mode } = request;
+    const { prompt, context, screenshot, mode, conversationHistory, projectContext } = request;
 
     // Prepare context
     const contextText = this.prepareContext(context);
 
     // Build messages
-    const userContent = this.buildUserContent(prompt, contextText, screenshot, mode);
+    const userContent = this.buildUserContent(prompt, contextText, screenshot, mode, projectContext);
 
     if (this.provider === 'openai' && this.openai) {
-      yield* this.askOpenAI(userContent, screenshot);
+      yield* this.askOpenAI(userContent, screenshot, conversationHistory);
     } else if (this.provider === 'anthropic' && this.anthropic) {
-      yield* this.askAnthropic(userContent, screenshot);
+      yield* this.askAnthropic(userContent, screenshot, conversationHistory);
     } else {
       throw new Error('AI provider not configured. Please set your API key in settings.');
     }
@@ -83,7 +139,8 @@ export class AIClientService {
 
   private async *askOpenAI(
     userContent: string,
-    screenshot: AIRequest['screenshot']
+    screenshot: AIRequest['screenshot'],
+    conversationHistory?: AIRequest['conversationHistory']
   ): AsyncGenerator<string> {
     if (!this.openai) {
       throw new Error('OpenAI client not initialized');
@@ -93,7 +150,18 @@ export class AIClientService {
       { role: 'system', content: SYSTEM_PROMPT },
     ];
 
-    // Add user message with optional vision
+    // Add conversation history first (previous messages)
+    if (conversationHistory && conversationHistory.length > 0) {
+      console.log('Including conversation history:', conversationHistory.length, 'messages');
+      for (const msg of conversationHistory) {
+        messages.push({
+          role: msg.role === 'user' ? 'user' : 'assistant',
+          content: msg.content,
+        });
+      }
+    }
+
+    // Add current user message with optional vision
     if (screenshot && screenshot.imageBase64) {
       console.log('Sending image to OpenAI, base64 length:', screenshot.imageBase64.length);
       messages.push({
@@ -114,7 +182,7 @@ export class AIClientService {
     }
 
     const stream = await this.openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: this.modelOverride || 'gpt-4o',
       messages,
       stream: true,
       max_tokens: 2000,
@@ -130,12 +198,28 @@ export class AIClientService {
 
   private async *askAnthropic(
     userContent: string,
-    screenshot: AIRequest['screenshot']
+    screenshot: AIRequest['screenshot'],
+    conversationHistory?: AIRequest['conversationHistory']
   ): AsyncGenerator<string> {
     if (!this.anthropic) {
       throw new Error('Anthropic client not initialized');
     }
 
+    // Build messages array with conversation history
+    const messages: Anthropic.MessageParam[] = [];
+
+    // Add conversation history first (previous messages)
+    if (conversationHistory && conversationHistory.length > 0) {
+      console.log('Including conversation history:', conversationHistory.length, 'messages');
+      for (const msg of conversationHistory) {
+        messages.push({
+          role: msg.role === 'user' ? 'user' : 'assistant',
+          content: msg.content,
+        });
+      }
+    }
+
+    // Build current message content
     const content: Anthropic.MessageCreateParams['content'] = [];
 
     // Add text content
@@ -153,11 +237,14 @@ export class AIClientService {
       });
     }
 
+    // Add current user message
+    messages.push({ role: 'user', content });
+
     const stream = await this.anthropic.messages.create({
-      model: 'claude-3-opus-20240229',
+      model: this.modelOverride || 'claude-3-opus-20240229',
       max_tokens: 2000,
       system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content }],
+      messages,
       stream: true,
     });
 
@@ -242,7 +329,8 @@ export class AIClientService {
     prompt: string,
     contextText: string,
     screenshot: AIRequest['screenshot'],
-    mode: AIRequest['mode']
+    mode: AIRequest['mode'],
+    projectContext?: string
   ): string {
     const parts: string[] = [];
 
@@ -257,7 +345,13 @@ export class AIClientService {
     parts.push(prompt);
     parts.push('');
 
-    // Add context
+    // Add project context (static analysis, injected before runtime context)
+    if (projectContext) {
+      parts.push(projectContext);
+      parts.push('');
+    }
+
+    // Add runtime context from UE
     if (contextText) {
       parts.push('Context from Unreal Engine:');
       parts.push(contextText);
@@ -276,6 +370,130 @@ export class AIClientService {
   estimateTokens(text: string): number {
     // Rough estimate: ~4 characters per token for English text
     return Math.ceil(text.length / 4);
+  }
+
+  // ===== UE Python Script Generation =====
+
+  async requestUEPythonScript(
+    conversationHistory: { role: string; content: string }[],
+    userIntent: string,
+    projectInfo?: string,
+    cameraInfo?: { x: number; y: number; z: number; pitch: number; yaw: number; roll: number }
+  ): Promise<string> {
+    // Build camera context section if available
+    let cameraContext = '';
+    if (cameraInfo) {
+      // Compute approximate forward vector from yaw (pitch ignored for ground-plane placement)
+      const yawRad = (cameraInfo.yaw * Math.PI) / 180;
+      const fwdX = Math.cos(yawRad);
+      const fwdY = Math.sin(yawRad);
+      cameraContext = `
+VIEWPORT CAMERA (use this for spatial requests like "in front of me", "here", "where I'm looking"):
+  Camera position: x=${cameraInfo.x.toFixed(1)}, y=${cameraInfo.y.toFixed(1)}, z=${cameraInfo.z.toFixed(1)}
+  Camera rotation: pitch=${cameraInfo.pitch.toFixed(1)}, yaw=${cameraInfo.yaw.toFixed(1)}, roll=${cameraInfo.roll.toFixed(1)}
+  Forward direction (ground plane): x=${fwdX.toFixed(3)}, y=${fwdY.toFixed(3)}
+
+  To spawn 300 units in front of camera (on the ground plane):
+    spawn_x = ${cameraInfo.x.toFixed(1)} + (${fwdX.toFixed(3)} * 300)
+    spawn_y = ${cameraInfo.y.toFixed(1)} + (${fwdY.toFixed(3)} * 300)
+    spawn_z = ${cameraInfo.z.toFixed(1)}  # same height as camera; adjust to 0 if ground-level makes more sense
+    spawn_loc = unreal.Vector(spawn_x, spawn_y, spawn_z)
+
+  When the user says "in front of me", "here", "at my location", or similar — use spawn_loc above.
+  When the user gives no location hint, use spawn_loc (camera-relative) rather than world origin.`;
+    } else {
+      cameraContext = `
+SPAWNING LOCATION: Camera info unavailable. Spawn at Vector(0, 0, 100) as safe default.`;
+    }
+
+    const systemPrompt = `You are a Python code generator for Unreal Engine 5.
+The user wants you to execute something inside Unreal Editor using Python Remote Execution.
+The script runs directly on the game thread — do NOT use any threading or callback APIs.
+
+RULES:
+- Output ONLY valid Python code — no explanations, no markdown fences, no comments unless critical
+- Always start with: import unreal
+- Use unreal.log() or print() for status output
+- Use the unreal Python API (unreal module) — assume UE5.x
+- Keep the script focused, safe, and minimal
+- NEVER use EditorLevelLibrary — it is deprecated and missing many functions in UE5
+- NEVER invent API calls — if unsure, use a simpler known-good approach
+- If the request cannot be done via Python API, print a clear explanation instead of failing silently
+
+CORRECT UE5 PATTERNS (use these exactly):
+
+Spawn a static mesh actor (e.g. cube):
+  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+  actor = subsystem.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(0, 0, 100), unreal.Rotator(0, 0, 0))
+  mesh = unreal.load_asset('/Engine/BasicShapes/Cube')
+  actor.static_mesh_component.set_static_mesh(mesh)
+
+Get selected actors:
+  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+  actors = subsystem.get_selected_level_actors()
+
+Move / rotate / scale an actor:
+  actor.set_actor_location(unreal.Vector(x, y, z))
+  actor.set_actor_rotation(unreal.Rotator(pitch, yaw, roll))
+  actor.set_actor_scale3d(unreal.Vector(x, y, z))
+
+Load asset:
+  unreal.load_asset('/Game/path/to/asset')
+  unreal.load_asset('/Engine/BasicShapes/Cube')
+  unreal.load_asset('/Engine/BasicShapes/Sphere')
+  unreal.load_asset('/Engine/BasicShapes/Cylinder')
+  unreal.load_asset('/Engine/BasicShapes/Cone')
+  unreal.load_asset('/Engine/BasicShapes/Plane')
+
+Get asset registry:
+  ar = unreal.AssetRegistryHelpers.get_asset_registry()
+
+Save all:
+  unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True, True)
+
+Run console command:
+  unreal.SystemLibrary.execute_console_command(None, 'stat fps')
+
+Delete an actor:
+  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+  subsystem.destroy_actor(actor)
+
+Set material on actor:
+  mat = unreal.load_asset('/Game/path/to/material')
+  actor.static_mesh_component.set_material(0, mat)
+${cameraContext}
+${projectInfo ? `PROJECT CONTEXT:\n${projectInfo}\n` : ''}Output ONLY the Python script:`;
+
+    const messages: { role: string; content: string }[] = [
+      ...conversationHistory.slice(-10), // last 10 messages for context
+      { role: 'user', content: userIntent },
+    ];
+
+    if (this.provider === 'openai' && this.openai) {
+      const response = await this.openai.chat.completions.create({
+        model: this.modelOverride || 'gpt-4o',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+        ],
+        max_tokens: 1500,
+      });
+      const script = response.choices[0]?.message?.content?.trim() ?? '';
+      // Strip markdown fences if model added them anyway
+      return script.replace(/^```python\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
+    } else if (this.provider === 'anthropic' && this.anthropic) {
+      const response = await this.anthropic.messages.create({
+        model: this.modelOverride || 'claude-opus-4-6',
+        max_tokens: 1500,
+        system: systemPrompt,
+        messages: messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      });
+      const textBlock = response.content.find(b => b.type === 'text');
+      const script = textBlock?.type === 'text' ? textBlock.text.trim() : '';
+      return script.replace(/^```python\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
+    } else {
+      throw new Error('AI provider not configured');
+    }
   }
 
   // ===== Action Plan Request =====
@@ -464,7 +682,7 @@ Respond with JSON only:`;
 
     console.log('[AIClient] Calling OpenAI API...');
     const response = await this.openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: this.modelOverride || 'gpt-4o',
       messages,
       max_tokens: 2000,
       response_format: { type: 'json_object' },
@@ -503,7 +721,7 @@ Respond with JSON only:`;
     }
 
     const response = await this.anthropic.messages.create({
-      model: 'claude-3-opus-20240229',
+      model: this.modelOverride || 'claude-3-opus-20240229',
       max_tokens: 2000,
       messages: [{ role: 'user', content }],
     });

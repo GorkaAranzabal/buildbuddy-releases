@@ -10,7 +10,7 @@ export class HotkeyManager {
     captureFullScreen: 'CommandOrControl+Shift+1',
     captureWindow: 'CommandOrControl+Shift+2',
     captureRegion: 'CommandOrControl+Shift+3',
-    quickAsk: 'CommandOrControl+Shift+A',
+    quickAsk: 'CommandOrControl+Enter',
   };
 
   private registeredShortcuts: string[] = [];

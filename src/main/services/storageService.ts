@@ -4,9 +4,11 @@ import path from 'path';
 import fs from 'fs';
 import { app, safeStorage } from 'electron';
 import type {
+  DailyUsage,
   HotkeyConfig,
   Session,
   StorageSchema,
+  UEProjectAnalysis,
   UserSettings,
   WindowState,
 } from '../../shared/types';
@@ -24,6 +26,10 @@ const DEFAULT_SETTINGS: UserSettings = {
   autoConnectUnreal: true,
   maxContextLines: 200,
   maxContextSize: 25 * 1024,
+  ueProjectPath: '',
+  unrealMCPEnabled: false,
+  unrealEnginePath: '',
+  devMode: false,
 };
 
 const DEFAULT_HOTKEY_CONFIG: HotkeyConfig = {
@@ -31,7 +37,7 @@ const DEFAULT_HOTKEY_CONFIG: HotkeyConfig = {
   captureFullScreen: 'CommandOrControl+Shift+1',
   captureWindow: 'CommandOrControl+Shift+2',
   captureRegion: 'CommandOrControl+Shift+3',
-  quickAsk: 'CommandOrControl+Shift+A',
+  quickAsk: 'CommandOrControl+Enter',
 };
 
 const DEFAULT_WINDOW_STATE: WindowState = {
@@ -41,6 +47,11 @@ const DEFAULT_WINDOW_STATE: WindowState = {
   height: 600,
   isCollapsed: false,
   isPinned: true,
+};
+
+const DEFAULT_DAILY_USAGE: DailyUsage = {
+  date: new Date().toISOString().split('T')[0],
+  askCount: 0,
 };
 
 export class StorageService {
@@ -68,6 +79,8 @@ export class StorageService {
       settings: DEFAULT_SETTINGS,
       hotkeyConfig: DEFAULT_HOTKEY_CONFIG,
       windowState: DEFAULT_WINDOW_STATE,
+      authEmail: null,
+      dailyUsage: DEFAULT_DAILY_USAGE,
     });
 
     await this.db.read();
@@ -84,6 +97,12 @@ export class StorageService {
     }
     if (!this.db.data.sessions) {
       this.db.data.sessions = [];
+    }
+    if (this.db.data.authEmail === undefined) {
+      this.db.data.authEmail = null;
+    }
+    if (!this.db.data.dailyUsage) {
+      this.db.data.dailyUsage = DEFAULT_DAILY_USAGE;
     }
 
     await this.db.write();
@@ -165,6 +184,25 @@ export class StorageService {
     await this.db.write();
   }
 
+  // ============ Project Analysis ============
+
+  async getProjectAnalysis(): Promise<UEProjectAnalysis | null> {
+    if (!this.db) throw new Error('Database not initialized');
+    return this.db.data.projectAnalysis ?? null;
+  }
+
+  async saveProjectAnalysis(analysis: UEProjectAnalysis): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    this.db.data.projectAnalysis = analysis;
+    await this.db.write();
+  }
+
+  async clearProjectAnalysis(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    this.db.data.projectAnalysis = undefined;
+    await this.db.write();
+  }
+
   private encryptApiKey(key: string): string {
     if (!key || !safeStorage.isEncryptionAvailable()) return key;
     const encrypted = safeStorage.encryptString(key);
@@ -208,6 +246,63 @@ export class StorageService {
     if (!this.db) throw new Error('Database not initialized');
 
     this.db.data.windowState = { ...this.db.data.windowState, ...state };
+    await this.db.write();
+  }
+
+  // ============ Auth ============
+
+  async getAuthEmail(): Promise<string | null> {
+    if (!this.db) throw new Error('Database not initialized');
+    return this.db.data.authEmail;
+  }
+
+  async setAuthEmail(email: string | null): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    this.db.data.authEmail = email;
+    await this.db.write();
+  }
+
+  // ============ Weekly Usage ============
+
+  /** Returns the ISO date string of the Monday that starts the current week. */
+  private getWeekStart(): string {
+    const d = new Date();
+    const day = d.getDay(); // 0=Sun, 1=Mon...6=Sat
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // rewind to Monday
+    return new Date(d.getFullYear(), d.getMonth(), diff).toISOString().split('T')[0];
+  }
+
+  async getDailyUsage(): Promise<DailyUsage> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    const weekStart = this.getWeekStart();
+
+    if (this.db.data.dailyUsage.date !== weekStart) {
+      this.db.data.dailyUsage = { date: weekStart, askCount: 0 };
+      await this.db.write();
+    }
+
+    return { ...this.db.data.dailyUsage };
+  }
+
+  async incrementDailyUsage(): Promise<DailyUsage> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    const weekStart = this.getWeekStart();
+
+    if (this.db.data.dailyUsage.date !== weekStart) {
+      this.db.data.dailyUsage = { date: weekStart, askCount: 0 };
+    }
+
+    this.db.data.dailyUsage.askCount++;
+    await this.db.write();
+
+    return { ...this.db.data.dailyUsage };
+  }
+
+  async resetDailyUsage(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    this.db.data.dailyUsage = { date: this.getWeekStart(), askCount: 0 };
     await this.db.write();
   }
 

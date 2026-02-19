@@ -16,7 +16,11 @@ export default defineConfig({
           build: {
             outDir: path.join(__dirname, 'dist/main'),
             rollupOptions: {
-              external: ['electron', 'ws', 'lowdb', 'openai', '@anthropic-ai/sdk', 'electron-store', '@jitsi/robotjs'],
+              external: [
+                'electron', 'electron-updater', 'ws', 'lowdb', 'lowdb/node',
+                'openai', '@anthropic-ai/sdk', 'electron-store', '@jitsi/robotjs',
+                'unreal-remote-execution', 'posthog-node',
+              ],
             },
           },
         },
@@ -51,5 +55,11 @@ export default defineConfig({
   build: {
     outDir: path.join(__dirname, 'dist/renderer'),
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: path.join(__dirname, 'src/renderer/index.html'),
+        vignette: path.join(__dirname, 'src/renderer/vignette.html'),
+      },
+    },
   },
 });

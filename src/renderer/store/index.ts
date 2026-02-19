@@ -1,13 +1,17 @@
 import { create } from 'zustand';
 import type {
+  AuthState,
   CaptureResult,
   ChatMessage,
   ConnectionStatus,
   ConnectorClient,
+  DailyUsage,
   HotkeyConfig,
+  MCPProjectInfo,
   ProjectInfoEvent,
   Session,
   UnrealContext,
+  UnrealMCPStatus,
   UserSettings,
 } from '../../shared/types';
 
@@ -34,8 +38,16 @@ interface AppState {
   settings: UserSettings | null;
   hotkeyConfig: HotkeyConfig | null;
 
+  // Auth
+  authState: AuthState | null;
+  dailyUsage: DailyUsage | null;
+
   // History
   sessions: Session[];
+
+  // Unreal MCP
+  unrealMCPStatus: UnrealMCPStatus;
+  unrealMCPProjectInfo: MCPProjectInfo | null;
 
   // Actions - UI
   setCollapsed: (collapsed: boolean) => void;
@@ -59,11 +71,20 @@ interface AppState {
   setSettings: (settings: UserSettings) => void;
   setHotkeyConfig: (config: HotkeyConfig) => void;
 
+  // Actions - Auth
+  setAuthState: (authState: AuthState) => void;
+  setDailyUsage: (usage: DailyUsage) => void;
+  clearAuth: () => void;
+
   // Actions - History
   setSessions: (sessions: Session[]) => void;
   addSession: (session: Session) => void;
   removeSession: (id: string) => void;
   clearSessions: () => void;
+
+  // Actions - Unreal MCP
+  setUnrealMCPStatus: (status: UnrealMCPStatus) => void;
+  setUnrealMCPProjectInfo: (info: MCPProjectInfo | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -89,8 +110,16 @@ export const useAppStore = create<AppState>((set) => ({
   settings: null,
   hotkeyConfig: null,
 
+  // Initial Auth
+  authState: null,
+  dailyUsage: null,
+
   // Initial History
   sessions: [],
+
+  // Initial Unreal MCP
+  unrealMCPStatus: 'disconnected',
+  unrealMCPProjectInfo: null,
 
   // UI Actions
   setCollapsed: (collapsed) => set({ isCollapsed: collapsed }),
@@ -152,6 +181,11 @@ export const useAppStore = create<AppState>((set) => ({
   setSettings: (settings) => set({ settings }),
   setHotkeyConfig: (config) => set({ hotkeyConfig: config }),
 
+  // Auth Actions
+  setAuthState: (authState) => set({ authState }),
+  setDailyUsage: (dailyUsage) => set({ dailyUsage }),
+  clearAuth: () => set({ authState: null, dailyUsage: null }),
+
   // History Actions
   setSessions: (sessions) => set({ sessions }),
 
@@ -166,6 +200,10 @@ export const useAppStore = create<AppState>((set) => ({
     })),
 
   clearSessions: () => set({ sessions: [] }),
+
+  // Unreal MCP Actions
+  setUnrealMCPStatus: (status) => set({ unrealMCPStatus: status }),
+  setUnrealMCPProjectInfo: (info) => set({ unrealMCPProjectInfo: info }),
 }));
 
 // Selectors
@@ -173,3 +211,13 @@ export const selectIsConnected = (state: AppState) => state.connectorStatus === 
 export const selectHasContext = (state: AppState) => state.currentContext !== null;
 export const selectProjectName = (state: AppState) => state.projectInfo?.project_name || null;
 export const selectEngineVersion = (state: AppState) => state.projectInfo?.engine_version || null;
+export const selectIsLoggedIn = (state: AppState) => state.authState?.isLoggedIn === true;
+export const selectIsPro = (state: AppState) => state.authState?.entitlement?.active === true;
+export const selectRemainingAsks = (state: AppState) => {
+  if (!state.authState?.entitlement || state.authState.entitlement.features.unlimited_asks) {
+    return null; // unlimited
+  }
+  const limit = state.authState.entitlement.features.daily_limit ?? 10;
+  const used = state.dailyUsage?.askCount ?? 0;
+  return Math.max(0, limit - used);
+};

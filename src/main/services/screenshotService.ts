@@ -20,6 +20,33 @@ export class ScreenshotService {
     }
   }
 
+  /**
+   * Find the desktopCapturer source that corresponds to a specific display.
+   * On Windows, source IDs contain the display handle in the format "screen:<id>:0".
+   * On macOS, sources are ordered by display index. Falls back to index-based selection.
+   */
+  private findSourceForDisplay(
+    sources: Electron.DesktopCapturerSource[],
+    targetDisplay: Electron.Display,
+    displayIndex: number
+  ): Electron.DesktopCapturerSource {
+    // Strategy 1: Match by display ID embedded in source.id (works on Windows)
+    // Windows source IDs look like "screen:1234567:0" where the middle number relates to the display
+    for (const source of sources) {
+      const parts = source.id.split(':');
+      if (parts.length >= 2) {
+        const sourceDisplayId = parseInt(parts[1], 10);
+        if (sourceDisplayId === targetDisplay.id) {
+          console.log(`Matched source ${source.id} to display ${targetDisplay.id} by ID`);
+          return source;
+        }
+      }
+    }
+    // Strategy 2: Fall back to index-based selection (reliable on macOS)
+    console.log(`Falling back to display index ${displayIndex} for source selection`);
+    return sources[displayIndex] ?? sources[0];
+  }
+
   async captureFullScreen(targetDisplayId?: number): Promise<CaptureResult> {
     // Get all displays and find the target
     const allDisplays = screen.getAllDisplays();
@@ -55,13 +82,7 @@ export class ScreenshotService {
       throw new Error('No screen sources found');
     }
 
-    // Select the right source based on display index
-    // On macOS, screen sources are ordered by display
-    let targetSource = sources[0];
-    if (displayIndex < sources.length) {
-      targetSource = sources[displayIndex];
-    }
-    
+    const targetSource = this.findSourceForDisplay(sources, targetDisplay, displayIndex);
     console.log(`Using source: ${targetSource.id} (${targetSource.name})`);
 
     const thumbnail = targetSource.thumbnail;

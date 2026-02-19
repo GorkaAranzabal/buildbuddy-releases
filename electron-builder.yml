@@ -81,8 +81,8 @@ linux:
 # Auto-update configuration
 publish:
   provider: github
-  owner: gorka-copilot
-  repo: overlay
+  owner: GorkaAranzabal
+  repo: buildbuddy-releases
   releaseType: release
 
 # Electron version

@@ -164,6 +164,15 @@ export interface RegionSelection {
   height: number;
 }
 
+// ===== Doc Image Types =====
+
+export interface DocImage {
+  imageUrl: string;
+  pageUrl: string;
+  pageTitle: string;
+  altText: string;
+}
+
 // ===== AI Types =====
 
 export type AIProvider = 'openai' | 'anthropic';
@@ -174,6 +183,8 @@ export interface AIRequest {
   context: UnrealContext | null;
   screenshot: CaptureResult | null;
   mode: AssistantMode;
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  projectContext?: string;
 }
 
 export interface CodeSnippet {
@@ -209,6 +220,7 @@ export interface ChatMessage {
     nextDebugSteps: string[];
     codeSnippets: CodeSnippet[];
   };
+  docImages?: Record<string, DocImage[]>;
 }
 
 // ===== Session Types =====
@@ -252,6 +264,16 @@ export interface UserSettings {
   autoConnectUnreal: boolean;
   maxContextLines: number;
   maxContextSize: number;
+
+  // UE Project
+  ueProjectPath?: string;
+
+  // Unreal MCP
+  unrealMCPEnabled: boolean;
+  unrealEnginePath: string;
+
+  // Developer
+  devMode?: boolean;
 }
 
 export interface WindowState {
@@ -270,11 +292,53 @@ export interface StorageSchema {
   settings: UserSettings;
   hotkeyConfig: HotkeyConfig;
   windowState: WindowState;
+  authEmail: string | null;
+  dailyUsage: DailyUsage;
+  projectAnalysis?: UEProjectAnalysis;
+}
+
+// ===== UE Project Analysis =====
+
+export interface UEProjectAnalysis {
+  projectName: string;
+  engineVersion: string;
+  uprojectPath: string;
+  plugins: Array<{ name: string; enabled: boolean }>;
+  modules: Array<{ name: string; type: string }>;
+  contentStats: {
+    totalAssets: number;
+    totalMaps: number;
+    byCategory: Record<string, number>;
+  };
+  sourceModules: string[];
+  configSummary: {
+    defaultMap?: string;
+    projectVersion?: string;
+    gameMode?: string;
+  };
+  analyzedAt: number;
 }
 
 // ===== Connection Status =====
 
 export type ConnectionStatus = 'connected' | 'disconnected' | 'connecting';
+
+// ===== Unreal MCP Types =====
+
+export type UnrealMCPStatus = 'disconnected' | 'starting' | 'connected' | 'error';
+
+export interface MCPProjectInfo {
+  projectName: string;
+  engineVersion: string;
+  projectPath: string;
+  platform?: string;
+}
+
+export interface MCPToolResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
 
 // ===== Agent Action Types =====
 
@@ -314,6 +378,34 @@ export interface ExecutionProgress {
   currentAction: AgentAction | null;
   error?: string;
   completedActions: string[];
+}
+
+// ===== Entitlement Types =====
+
+export interface EntitlementFeatures {
+  unlimited_asks: boolean;
+  faster_responses: boolean;
+  best_model: boolean;
+  daily_limit?: number;
+}
+
+export interface EntitlementData {
+  active: boolean;
+  plan: 'free' | 'pro';
+  status?: string;
+  email: string;
+  features: EntitlementFeatures;
+}
+
+export interface AuthState {
+  email: string | null;
+  entitlement: EntitlementData | null;
+  isLoggedIn: boolean;
+}
+
+export interface DailyUsage {
+  date: string;    // "YYYY-MM-DD"
+  askCount: number;
 }
 
 // ===== IPC Types =====
@@ -358,6 +450,14 @@ export interface IPCChannels {
   'settings:get-hotkeys': void;
   'settings:update-hotkeys': Partial<HotkeyConfig>;
   'settings:hotkeys': HotkeyConfig;
+
+  // Auth / Entitlements
+  'auth:login': string;
+  'auth:logout': void;
+  'auth:get-state': void;
+  'auth:check-can-ask': void;
+  'auth:record-ask': void;
+  'auth:get-usage': void;
 
   // Agent Actions
   'agent:request-plan': ActionPlanRequest;

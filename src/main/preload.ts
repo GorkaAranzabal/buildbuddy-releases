@@ -9,6 +9,15 @@ const electronAPI = {
     collapse: (collapsed) => ipcRenderer.send('window:collapse', collapsed),
     pin: (pinned) => ipcRenderer.send('window:pin', pinned),
     getState: () => ipcRenderer.invoke('window:get-state'),
+    growForConversation: () => ipcRenderer.send('window:grow-for-conversation'),
+    enterSettings: () => ipcRenderer.send('window:enter-settings'),
+    exitSettings: () => ipcRenderer.send('window:exit-settings'),
+  },
+
+  // Vignette overlay (full-screen AI thinking effect)
+  vignette: {
+    show: () => ipcRenderer.send('vignette:show'),
+    hide: () => ipcRenderer.send('vignette:hide'),
   },
 
   // Screenshot capture
@@ -83,6 +92,33 @@ const electronAPI = {
     updateHotkeys: (config) => ipcRenderer.invoke('settings:update-hotkeys', config),
   },
 
+  // Auth / Entitlements
+  auth: {
+    login: (email) => ipcRenderer.invoke('auth:login', email),
+    logout: () => ipcRenderer.invoke('auth:logout'),
+    getState: () => ipcRenderer.invoke('auth:get-state'),
+    checkCanAsk: () => ipcRenderer.invoke('auth:check-can-ask'),
+    recordAsk: () => ipcRenderer.invoke('auth:record-ask'),
+    getUsage: () => ipcRenderer.invoke('auth:get-usage'),
+    checkEntitlement: (email) => ipcRenderer.invoke('auth:check-entitlement', email),
+  },
+
+  // App info
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:get-version'),
+    quit: () => ipcRenderer.send('app:quit'),
+  },
+
+  // Auto-updater
+  updater: {
+    install: () => ipcRenderer.send('updater:install'),
+    onUpdateReady: (callback) => {
+      const subscription = (_event) => callback();
+      ipcRenderer.on('updater:update-ready', subscription);
+      return () => ipcRenderer.removeListener('updater:update-ready', subscription);
+    },
+  },
+
   // Focus input (triggered by hotkey)
   onFocusInput: (callback) => {
     const subscription = () => callback();
@@ -103,6 +139,18 @@ const electronAPI = {
     },
   },
 
+  // Documentation images
+  docs: {
+    fetchImages: (query: string) => ipcRenderer.invoke('docs:fetch-images', query),
+  },
+
+  // UE Project analysis
+  project: {
+    browse: () => ipcRenderer.invoke('project:browse'),
+    analyze: (projectPath) => ipcRenderer.invoke('project:analyze', projectPath),
+    getAnalysis: () => ipcRenderer.invoke('project:get-analysis'),
+  },
+
   // Unreal Engine commands
   ue: {
     isConnected: () => ipcRenderer.invoke('ue:is-connected'),
@@ -121,6 +169,21 @@ const electronAPI = {
     getProjectInfo: () => ipcRenderer.invoke('ue:get-project-info'),
     // Assets
     getAssets: (path, type) => ipcRenderer.invoke('ue:get-assets', path, type),
+  },
+
+  // Unreal MCP (MCP server via Python Remote Execution)
+  unrealMcp: {
+    getStatus: () => ipcRenderer.invoke('unreal-mcp:get-status'),
+    start: () => ipcRenderer.invoke('unreal-mcp:start'),
+    stop: () => ipcRenderer.invoke('unreal-mcp:stop'),
+    testConnection: () => ipcRenderer.invoke('unreal-mcp:test-connection'),
+    callTool: (name, args) => ipcRenderer.invoke('unreal-mcp:call-tool', name, args),
+    executeIntent: (params) => ipcRenderer.invoke('unreal-mcp:execute-intent', params),
+    onStatusChange: (callback) => {
+      const handler = (_event, status) => callback(status);
+      ipcRenderer.on('unreal-mcp:status', handler);
+      return () => ipcRenderer.removeListener('unreal-mcp:status', handler);
+    },
   },
 };
 

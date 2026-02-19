@@ -8,7 +8,36 @@ import { AIClientService } from './services/aiClient';
 import { StorageService } from './services/storageService';
 import { AgentExecutor } from './services/agentExecutor';
 import { UECommandService } from './services/ueCommandService';
-import type { AIRequest, CaptureMode, Session, UserSettings, HotkeyConfig, ActionPlanRequest, AgentAction, UECommandType } from '../shared/types';
+import { EntitlementService } from './services/entitlementService';
+import { AutoUpdaterService } from './services/autoUpdaterService';
+import { DocImageService } from './services/docImageService';
+import { ProjectAnalysisService } from './services/projectAnalysisService';
+import { UnrealMCPService } from './services/unrealMCPService';
+import type { AIRequest, CaptureMode, Session, UserSettings, HotkeyConfig, ActionPlanRequest, AgentAction, UECommandType, UnrealContext } from '../shared/types';
+import {
+  initAnalytics, trackAppLaunched, trackPlanIdentified,
+  trackFeatureUsed, trackScreenCaptureTaken, trackRemoteControlCommand,
+  shutdownAnalytics,
+} from './analytics';
+
+// Keywords that are unambiguously Unreal Engine-specific.
+// We only inject the UE project context when the query is actually UE-related
+// to avoid polluting responses about other software (Blender, Unity, etc.).
+const UE_KEYWORDS = [
+  'unreal', 'ue4', 'ue5', 'blueprint', 'blueprints',
+  'uproject', 'uasset', 'umap', 'uproperty', 'ufunction', 'uclass',
+  'niagara', 'nanite', 'lumen', 'metasound',
+  'gameplay ability', 'world partition', 'actor component',
+  'game mode', 'game instance', 'subsystem',
+];
+
+function isUERelatedQuery(prompt: string, context: UnrealContext | null): boolean {
+  // If the UE connector is live, the user is definitely working in UE
+  if (context?.projectInfo) return true;
+  // Otherwise check for UE-specific keywords in the prompt
+  const lower = prompt.toLowerCase();
+  return UE_KEYWORDS.some((kw) => lower.includes(kw));
+}
 
 class GorkaCopilotApp {
   private windowManager: WindowManager;
@@ -19,6 +48,11 @@ class GorkaCopilotApp {
   private storageService: StorageService;
   private agentExecutor: AgentExecutor;
   private ueCommandService: UECommandService;
+  private entitlementService: EntitlementService;
+  private autoUpdaterService: AutoUpdaterService;
+  private docImageService: DocImageService;
+  private projectAnalysisService: ProjectAnalysisService;
+  private unrealMCPService: UnrealMCPService;
 
   constructor() {
     this.windowManager = new WindowManager();
@@ -29,11 +63,26 @@ class GorkaCopilotApp {
     this.storageService = new StorageService();
     this.agentExecutor = new AgentExecutor();
     this.ueCommandService = new UECommandService(this.webSocketServer);
+    this.entitlementService = new EntitlementService(this.storageService);
+    this.autoUpdaterService = new AutoUpdaterService();
+    this.docImageService = new DocImageService();
+    this.projectAnalysisService = new ProjectAnalysisService();
+    this.unrealMCPService = new UnrealMCPService();
   }
 
   async initialize(): Promise<void> {
     // Initialize storage first
     await this.storageService.initialize();
+
+    // Initialize analytics with persistent anonymous device ID
+    initAnalytics();
+    trackAppLaunched();
+
+    // Identify plan tier (no PII — just 'free' or 'pro')
+    const authState = await this.entitlementService.getAuthState();
+    if (authState.isLoggedIn && authState.entitlement) {
+      trackPlanIdentified(authState.entitlement.active ? 'pro' : 'free');
+    }
 
     // Load settings
     const settings = await this.storageService.getSettings();
@@ -61,6 +110,9 @@ class GorkaCopilotApp {
     // Setup connector event forwarding
     this.setupConnectorEventForwarding();
 
+    // Initialize auto-updater
+    this.autoUpdaterService.initialize(mainWindow);
+
     // Save window state on close
     mainWindow.on('close', async () => {
       const state = this.windowManager.getState();
@@ -87,6 +139,7 @@ class GorkaCopilotApp {
         break;
       case 'quickAsk':
         this.windowManager.show();
+        this.windowManager.setCollapsed(false);
         mainWindow.webContents.send('focus-input');
         break;
     }
@@ -113,6 +166,7 @@ class GorkaCopilotApp {
       }
 
       if (result) {
+        trackScreenCaptureTaken(mode);
         mainWindow.webContents.send('capture:result', result);
       }
     } catch (error) {
@@ -123,6 +177,48 @@ class GorkaCopilotApp {
   private setupIpcHandlers(): void {
     const mainWindow = this.windowManager.getMainWindow();
     if (!mainWindow) return;
+
+    // App info
+    ipcMain.handle('app:get-version', () => {
+      return app.getVersion();
+    });
+
+    ipcMain.on('app:quit', () => {
+      app.quit();
+    });
+
+    ipcMain.on('window:grow-for-conversation', () => {
+      this.windowManager.growForConversation();
+    });
+
+    ipcMain.on('window:enter-settings', () => {
+      this.windowManager.setSettingsMode(true);
+    });
+
+    ipcMain.on('window:exit-settings', () => {
+      this.windowManager.setSettingsMode(false);
+    });
+
+    // UE Project Analysis handlers
+    ipcMain.handle('project:browse', async () => {
+      const { dialog } = await import('electron');
+      const result = await dialog.showOpenDialog({
+        properties: ['openDirectory'],
+        title: 'Select Unreal Engine Project Folder',
+        buttonLabel: 'Select Project',
+      });
+      return result.canceled ? null : result.filePaths[0];
+    });
+
+    ipcMain.handle('project:analyze', async (_event, projectPath: string) => {
+      const analysis = await this.projectAnalysisService.analyzeProject(projectPath);
+      await this.storageService.saveProjectAnalysis(analysis);
+      return analysis;
+    });
+
+    ipcMain.handle('project:get-analysis', async () => {
+      return this.storageService.getProjectAnalysis();
+    });
 
     // Window handlers
     ipcMain.on('window:toggle', () => {
@@ -139,6 +235,15 @@ class GorkaCopilotApp {
 
     ipcMain.handle('window:get-state', () => {
       return this.windowManager.getState();
+    });
+
+    // Vignette handlers
+    ipcMain.on('vignette:show', () => {
+      this.windowManager.showVignette();
+    });
+
+    ipcMain.on('vignette:hide', () => {
+      this.windowManager.hideVignette();
     });
 
     // Capture handlers
@@ -189,6 +294,7 @@ class GorkaCopilotApp {
         console.log('[Screenshot] Starting capture...');
         const result = await this.screenshotService.captureFullScreen(currentDisplay.id);
         console.log('[Screenshot] Capture complete:', result ? `${result.imageBase64.length} bytes` : 'null');
+        if (result) trackScreenCaptureTaken('fullscreen-sync');
 
         // Show our window again
         if (wasVisible) {
@@ -206,16 +312,94 @@ class GorkaCopilotApp {
       }
     });
 
+    // Auth / Entitlement handlers
+    ipcMain.handle('auth:login', async (_event, email: string) => {
+      const state = await this.entitlementService.login(email);
+      if (state.entitlement) {
+        trackPlanIdentified(state.entitlement.active ? 'pro' : 'free');
+      }
+      return state;
+    });
+
+    ipcMain.handle('auth:logout', async () => {
+      await this.entitlementService.logout();
+    });
+
+    ipcMain.handle('auth:get-state', async () => {
+      return this.entitlementService.getAuthState();
+    });
+
+    ipcMain.handle('auth:check-can-ask', async () => {
+      return this.entitlementService.checkCanAsk();
+    });
+
+    ipcMain.handle('auth:record-ask', async () => {
+      return this.entitlementService.recordAsk();
+    });
+
+    ipcMain.handle('auth:get-usage', async () => {
+      return this.storageService.getDailyUsage();
+    });
+
+    ipcMain.handle('auth:check-entitlement', async (_event, email: string) => {
+      return this.entitlementService.checkEntitlement(email);
+    });
+
+    // Auto-updater handlers
+    ipcMain.on('updater:install', () => {
+      this.autoUpdaterService.installUpdate();
+    });
+
     // AI handlers
     ipcMain.on('ai:ask', async (_event, request: AIRequest) => {
       try {
+        // Check entitlement before processing
+        const canAsk = await this.entitlementService.checkCanAsk();
+        if (!canAsk.allowed) {
+          mainWindow.webContents.send('ai:error', {
+            message: canAsk.reason || 'Ask limit reached',
+            type: 'entitlement_limit',
+          });
+          return;
+        }
+
+        // Record the ask
+        await this.entitlementService.recordAsk();
+        trackFeatureUsed('ai_ask');
+
+        // Set model based on entitlement tier
+        if (!this.entitlementService.isPro()) {
+          this.aiClient.setModelOverride('gpt-4o-mini');
+        } else {
+          this.aiClient.setModelOverride(null);
+        }
+
         const context = request.context || this.webSocketServer.getCurrentContext();
-        const fullRequest = { ...request, context };
+
+        // Inject UE project context — only when the query is UE-related, and
+        // silently re-analyze so users never need to hit Re-analyze manually.
+        const currentSettings = await this.storageService.getSettings();
+        let projectContext: string | undefined;
+        if (currentSettings.ueProjectPath && isUERelatedQuery(request.prompt, context)) {
+          try {
+            const freshAnalysis = await this.projectAnalysisService.analyzeProject(currentSettings.ueProjectPath);
+            await this.storageService.saveProjectAnalysis(freshAnalysis);
+            projectContext = this.projectAnalysisService.generateContextText(freshAnalysis);
+          } catch {
+            // Fall back to cached analysis if re-scan fails (e.g. path moved)
+            const cachedAnalysis = await this.storageService.getProjectAnalysis();
+            if (cachedAnalysis) {
+              projectContext = this.projectAnalysisService.generateContextText(cachedAnalysis);
+            }
+          }
+        }
+
+        const fullRequest = { ...request, context, projectContext };
 
         for await (const chunk of this.aiClient.ask(fullRequest)) {
           mainWindow.webContents.send('ai:stream', chunk);
         }
-        
+
         // Send completion signal when streaming is done
         mainWindow.webContents.send('ai:complete', { success: true });
       } catch (error) {
@@ -346,6 +530,7 @@ class GorkaCopilotApp {
       });
 
       const result = await this.agentExecutor.execute(actions);
+      trackFeatureUsed('agent_execute');
       console.log('[Main] Execution result:', result.success ? '✅ Success' : '❌ Failed', result.error || '');
       return result;
     });
@@ -353,6 +538,16 @@ class GorkaCopilotApp {
     ipcMain.on('agent:stop', () => {
       console.log('[Main] agent:stop called');
       this.agentExecutor.stop();
+    });
+
+    // ===== Documentation Image Handlers =====
+    ipcMain.handle('docs:fetch-images', async (_event, query: string) => {
+      try {
+        return await this.docImageService.fetchImagesForQuery(query);
+      } catch (error) {
+        console.error('[DocImages] Failed:', query, error);
+        return [];
+      }
     });
 
     // ===== Unreal Engine Command Handlers =====
@@ -364,6 +559,7 @@ class GorkaCopilotApp {
 
     ipcMain.handle('ue:execute-command', async (_event, command: UECommandType, params: Record<string, unknown>) => {
       console.log('[Main] ue:execute-command called:', command, params);
+      trackRemoteControlCommand(command);
       return this.ueCommandService.executeCommand(command, params);
     });
 
@@ -407,6 +603,49 @@ class GorkaCopilotApp {
     ipcMain.handle('ue:get-assets', async (_event, path?: string, type?: string) => {
       return this.ueCommandService.getAssets(path, type);
     });
+
+    // ===== Unreal MCP =====
+    ipcMain.handle('unreal-mcp:get-status', () => this.unrealMCPService.getStatus());
+
+    ipcMain.handle('unreal-mcp:start', async () => {
+      const s = await this.storageService.getSettings();
+      return this.unrealMCPService.start(s.unrealEnginePath ?? '', s.ueProjectPath ?? '');
+    });
+
+    ipcMain.handle('unreal-mcp:stop', async () => {
+      await this.unrealMCPService.stop();
+      return { success: true };
+    });
+
+    ipcMain.handle('unreal-mcp:test-connection', () => this.unrealMCPService.testConnection());
+
+    ipcMain.handle('unreal-mcp:call-tool', (_e, name: string, args: Record<string, unknown>) =>
+      this.unrealMCPService.callTool(name, args)
+    );
+
+    ipcMain.handle('unreal-mcp:execute-intent', async (
+      _e,
+      { conversationHistory, intent }: { conversationHistory: { role: string; content: string }[]; intent: string }
+    ) => {
+      try {
+        console.log('[MCP Intent] Generating Python script for:', intent.slice(0, 80));
+        const cameraInfo = await this.unrealMCPService.getViewportCameraInfo();
+        if (cameraInfo) {
+          console.log('[MCP Intent] Camera info fetched:', JSON.stringify(cameraInfo));
+        }
+        const script = await this.aiClient.requestUEPythonScript(conversationHistory, intent, undefined, cameraInfo ?? undefined);
+        console.log('[MCP Intent] Script generated, executing...');
+        const result = await this.unrealMCPService.callTool('editor_run_python', { code: script });
+        trackRemoteControlCommand('mcp_execute_intent');
+        const output = (result.data as any)?.content?.[0]?.text ?? '';
+        console.log('[MCP Intent] Execution result:', result.success, output.slice(0, 100));
+        return { success: result.success, script, output, error: result.error };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        console.error('[MCP Intent] Error:', error);
+        return { success: false, script: '', output: '', error };
+      }
+    });
   }
 
   private setupConnectorEventForwarding(): void {
@@ -420,11 +659,20 @@ class GorkaCopilotApp {
     this.webSocketServer.onContextUpdate((context) => {
       mainWindow.webContents.send('connector:context', context);
     });
+
+    this.unrealMCPService.onStatusChange((status) => {
+      mainWindow.webContents.send('unreal-mcp:status', status);
+    });
+  }
+
+  get isUpdating(): boolean {
+    return this.autoUpdaterService.updating;
   }
 
   async cleanup(): Promise<void> {
     this.hotkeyManager.unregisterAll();
     await this.webSocketServer.stop();
+    await this.unrealMCPService.stop();
     this.screenshotService.clearTempFiles();
   }
 }
@@ -445,18 +693,25 @@ app.whenReady().then(async () => {
 });
 
 // Handle window close
-app.on('window-all-closed', async () => {
-  if (gorkaCopilot) {
-    await gorkaCopilot.cleanup();
+app.on('window-all-closed', () => {
+  // Don't call app.quit() during auto-update — let electron-updater handle the quit/relaunch
+  if (gorkaCopilot?.isUpdating) {
+    console.log('[Main] Skipping app.quit() — auto-updater is handling restart');
+    return;
   }
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  // On macOS, quit when all windows are closed (unlike typical Mac behavior)
+  app.quit();
 });
 
-// Handle before quit
+// Handle before quit - do cleanup
 app.on('before-quit', async () => {
+  // Skip cleanup during auto-update to avoid interfering with the restart
+  if (gorkaCopilot?.isUpdating) {
+    console.log('[Main] Skipping cleanup — auto-updater is handling restart');
+    return;
+  }
   if (gorkaCopilot) {
     await gorkaCopilot.cleanup();
   }
+  await shutdownAnalytics();
 });
