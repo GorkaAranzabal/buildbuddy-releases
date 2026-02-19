@@ -376,11 +376,15 @@ class GorkaCopilotApp {
 
         const context = request.context || this.webSocketServer.getCurrentContext();
 
-        // Inject UE project context — only when the query is UE-related, and
-        // silently re-analyze so users never need to hit Re-analyze manually.
+        // Inject UE project context. If the user has explicitly configured a project
+        // path, always inject it — they set it because they want it for all questions.
+        // Otherwise fall back to keyword-based detection (covers the live-connector case).
         const currentSettings = await this.storageService.getSettings();
         let projectContext: string | undefined;
-        if (currentSettings.ueProjectPath && isUERelatedQuery(request.prompt, context)) {
+        const shouldInjectUEContext = currentSettings.ueProjectPath
+          ? true
+          : isUERelatedQuery(request.prompt, context);
+        if (shouldInjectUEContext && currentSettings.ueProjectPath) {
           try {
             const freshAnalysis = await this.projectAnalysisService.analyzeProject(currentSettings.ueProjectPath);
             await this.storageService.saveProjectAnalysis(freshAnalysis);
@@ -391,6 +395,12 @@ class GorkaCopilotApp {
             if (cachedAnalysis) {
               projectContext = this.projectAnalysisService.generateContextText(cachedAnalysis);
             }
+          }
+        } else if (shouldInjectUEContext) {
+          // No project path but connector provides context — use cached analysis if any
+          const cachedAnalysis = await this.storageService.getProjectAnalysis();
+          if (cachedAnalysis) {
+            projectContext = this.projectAnalysisService.generateContextText(cachedAnalysis);
           }
         }
 

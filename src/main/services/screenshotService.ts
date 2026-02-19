@@ -22,28 +22,60 @@ export class ScreenshotService {
 
   /**
    * Find the desktopCapturer source that corresponds to a specific display.
-   * On Windows, source IDs contain the display handle in the format "screen:<id>:0".
-   * On macOS, sources are ordered by display index. Falls back to index-based selection.
+   *
+   * Strategy 1: display_id property (Electron 26+) — the HMONITOR handle on Windows
+   *   that directly matches display.id. Most reliable when available.
+   * Strategy 2: ID-embedded match — parses the numeric part of "screen:N:0".
+   *   Reliable on macOS where N matches the Electron display id.
+   * Strategy 3: Position-sorted index (Windows fallback) — screen.getAllDisplays()
+   *   always puts the primary display first regardless of position, while
+   *   desktopCapturer.getSources() on Windows enumerates left-to-right by screen
+   *   bounds. Sorting both arrays by x-position gives a consistent mapping.
+   * Strategy 4: Raw index fallback.
    */
   private findSourceForDisplay(
     sources: Electron.DesktopCapturerSource[],
     targetDisplay: Electron.Display,
     displayIndex: number
   ): Electron.DesktopCapturerSource {
-    // Strategy 1: Match by display ID embedded in source.id (works on Windows)
-    // Windows source IDs look like "screen:1234567:0" where the middle number relates to the display
+    // Strategy 1: display_id (Electron 26+, works on both macOS and Windows)
+    for (const source of sources) {
+      const displayId = (source as any).display_id;
+      if (displayId !== undefined && displayId !== '') {
+        if (String(displayId) === String(targetDisplay.id)) {
+          console.log(`[Screenshot] Matched source ${source.id} to display ${targetDisplay.id} via display_id`);
+          return source;
+        }
+      }
+    }
+
+    // Strategy 2: numeric ID embedded in source.id string (macOS)
     for (const source of sources) {
       const parts = source.id.split(':');
       if (parts.length >= 2) {
         const sourceDisplayId = parseInt(parts[1], 10);
         if (sourceDisplayId === targetDisplay.id) {
-          console.log(`Matched source ${source.id} to display ${targetDisplay.id} by ID`);
+          console.log(`[Screenshot] Matched source ${source.id} to display ${targetDisplay.id} via source ID`);
           return source;
         }
       }
     }
-    // Strategy 2: Fall back to index-based selection (reliable on macOS)
-    console.log(`Falling back to display index ${displayIndex} for source selection`);
+
+    // Strategy 3: Windows — sort displays by x-position to match desktopCapturer's order
+    if (process.platform === 'win32') {
+      const allDisplays = screen.getAllDisplays();
+      const sortedDisplays = [...allDisplays].sort((a, b) =>
+        a.bounds.x !== b.bounds.x ? a.bounds.x - b.bounds.x : a.bounds.y - b.bounds.y
+      );
+      const positionIndex = sortedDisplays.findIndex(d => d.id === targetDisplay.id);
+      if (positionIndex >= 0 && positionIndex < sources.length) {
+        console.log(`[Screenshot] Windows: position-sorted index ${positionIndex} for display at x=${targetDisplay.bounds.x}`);
+        return sources[positionIndex] ?? sources[0];
+      }
+    }
+
+    // Strategy 4: raw index fallback (macOS when strategies 1 & 2 both miss)
+    console.log(`[Screenshot] Fallback to display index ${displayIndex}`);
     return sources[displayIndex] ?? sources[0];
   }
 
