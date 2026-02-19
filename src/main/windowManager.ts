@@ -27,6 +27,7 @@ export class WindowManager {
   private isPinned: boolean = true;
   private isVisible: boolean = true;
   private inSettingsMode: boolean = false;
+  private isQuitting: boolean = false;
 
   // Window dimensions - Notch style UI
   private expandedBounds: { width: number; height: number } = { width: 520, height: 600 };
@@ -144,9 +145,14 @@ export class WindowManager {
       }
     });
 
-    // Prevent closing on macOS (hide instead)
+    // When the app is actually quitting (app.quit() called), allow windows to close.
+    // Otherwise on macOS, hide the window instead of closing it (standard macOS behaviour).
+    app.on('before-quit', () => {
+      this.isQuitting = true;
+    });
+
     this.mainWindow.on('close', (event) => {
-      if (process.platform === 'darwin' && this.mainWindow) {
+      if (process.platform === 'darwin' && !this.isQuitting && this.mainWindow) {
         event.preventDefault();
         this.mainWindow.hide();
         this.isVisible = false;

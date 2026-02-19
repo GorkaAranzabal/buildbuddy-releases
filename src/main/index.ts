@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } from 'electron';
 import path from 'path';
 import { WindowManager } from './windowManager';
 import { WebSocketServer } from './services/websocketServer';
@@ -53,6 +53,7 @@ class GorkaCopilotApp {
   private docImageService: DocImageService;
   private projectAnalysisService: ProjectAnalysisService;
   private unrealMCPService: UnrealMCPService;
+  private tray: Tray | null = null;
 
   constructor() {
     this.windowManager = new WindowManager();
@@ -96,6 +97,9 @@ class GorkaCopilotApp {
 
     // Create main window
     const mainWindow = this.windowManager.createMainWindow(windowState);
+
+    // Set up system tray (gives users a reliable way to quit on all platforms)
+    this.setupTray();
 
     // Register hotkeys
     this.hotkeyManager.setConfig(hotkeyConfig);
@@ -172,6 +176,38 @@ class GorkaCopilotApp {
     } catch (error) {
       console.error('Capture failed:', error);
     }
+  }
+
+  private setupTray(): void {
+    const iconPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'tray-icon.png')
+      : path.join(process.cwd(), 'build', 'icon.png');
+
+    let trayImage = nativeImage.createFromPath(iconPath);
+    if (trayImage.isEmpty()) {
+      trayImage = nativeImage.createEmpty();
+    } else {
+      trayImage = trayImage.resize({ width: 16, height: 16 });
+    }
+
+    this.tray = new Tray(trayImage);
+    this.tray.setToolTip('BuildBuddy');
+
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: 'Show BuildBuddy',
+        click: () => { this.windowManager.show(); },
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit BuildBuddy',
+        click: () => { app.quit(); },
+      },
+    ]);
+    this.tray.setContextMenu(contextMenu);
+
+    // Clicking the tray icon shows the window
+    this.tray.on('click', () => { this.windowManager.show(); });
   }
 
   private setupIpcHandlers(): void {
@@ -684,6 +720,8 @@ class GorkaCopilotApp {
     await this.webSocketServer.stop();
     await this.unrealMCPService.stop();
     this.screenshotService.clearTempFiles();
+    this.tray?.destroy();
+    this.tray = null;
   }
 }
 
