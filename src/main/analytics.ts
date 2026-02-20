@@ -9,19 +9,22 @@ const POSTHOG_HOST = 'https://us.i.posthog.com';
 
 let client: PostHog;
 let deviceId: string;
+let isNewInstall = false;
 
-function loadOrCreateDeviceId(): string {
+function loadOrCreateDeviceId(): void {
   const filePath = path.join(app.getPath('userData'), 'device-id.txt');
   if (fs.existsSync(filePath)) {
-    return fs.readFileSync(filePath, 'utf-8').trim();
+    deviceId = fs.readFileSync(filePath, 'utf-8').trim();
+    isNewInstall = false;
+  } else {
+    deviceId = crypto.randomUUID();
+    fs.writeFileSync(filePath, deviceId, 'utf-8');
+    isNewInstall = true;
   }
-  const id = crypto.randomUUID();
-  fs.writeFileSync(filePath, id, 'utf-8');
-  return id;
 }
 
 export function initAnalytics(): void {
-  deviceId = loadOrCreateDeviceId();
+  loadOrCreateDeviceId();
   client = new PostHog(POSTHOG_KEY, { host: POSTHOG_HOST });
 }
 
@@ -29,8 +32,18 @@ export function trackAppLaunched(): void {
   client.capture({ distinctId: deviceId, event: 'app_launched' });
 }
 
-export function trackPlanIdentified(plan: 'free' | 'pro'): void {
-  client.identify({ distinctId: deviceId, properties: { plan } });
+/** Fires only once ever — on first launch after a fresh install. */
+export function trackAppInstalled(): void {
+  if (isNewInstall) {
+    client.capture({ distinctId: deviceId, event: 'app_installed' });
+  }
+}
+
+export function trackPlanIdentified(plan: 'free' | 'pro', email?: string): void {
+  client.identify({
+    distinctId: deviceId,
+    properties: { plan, ...(email ? { email } : {}) },
+  });
 }
 
 export function trackFeatureUsed(featureName: string): void {

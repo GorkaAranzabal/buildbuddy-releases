@@ -21,10 +21,10 @@ export function UpgradePrompt({ onDismiss, message }: UpgradePromptProps) {
         </div>
         <div className="flex-1">
           <p className="text-white/90 text-sm font-medium mb-1">
-            Daily limit reached
+            Weekly limit reached
           </p>
           <p className="text-white/50 text-xs mb-3">
-            {message || "You've used all your free asks for today. Upgrade to Pro for unlimited asks and the best AI model."}
+            {message || "You've used all your free asks for this week. Upgrade to Pro for unlimited asks and the best AI model."}
           </p>
           <div className="flex items-center gap-2">
             <button

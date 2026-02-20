@@ -214,10 +214,10 @@ export const selectEngineVersion = (state: AppState) => state.projectInfo?.engin
 export const selectIsLoggedIn = (state: AppState) => state.authState?.isLoggedIn === true;
 export const selectIsPro = (state: AppState) => state.authState?.entitlement?.active === true;
 export const selectRemainingAsks = (state: AppState) => {
-  if (!state.authState?.entitlement || state.authState.entitlement.features.unlimited_asks) {
+  if (!state.authState?.entitlement || state.authState.entitlement.features?.unlimited_asks) {
     return null; // unlimited
   }
-  const limit = state.authState.entitlement.features.daily_limit ?? 10;
+  const limit = state.authState.entitlement.features?.daily_limit ?? 10;
   const used = state.dailyUsage?.askCount ?? 0;
   return Math.max(0, limit - used);
 };

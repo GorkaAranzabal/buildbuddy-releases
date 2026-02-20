@@ -85,13 +85,13 @@ export class EntitlementService {
     }
 
     // Pro users: always allowed
-    if (authState.entitlement.active && authState.entitlement.features.unlimited_asks) {
+    if (authState.entitlement.active && authState.entitlement.features?.unlimited_asks) {
       return { allowed: true };
     }
 
     // Free users: check weekly limit
     const usage = await this.storageService.getDailyUsage();
-    const limit = authState.entitlement.features.daily_limit ?? FREE_WEEKLY_LIMIT;
+    const limit = authState.entitlement.features?.daily_limit ?? FREE_WEEKLY_LIMIT;
     const remaining = limit - usage.askCount;
 
     if (remaining <= 0) {
@@ -138,7 +138,16 @@ export class EntitlementService {
       throw new Error(`Entitlement API error: ${response.status} ${response.statusText}`);
     }
 
-    return (await response.json()) as EntitlementData;
+    const data = (await response.json()) as EntitlementData;
+    if (!data.features) {
+      data.features = {
+        unlimited_asks: false,
+        faster_responses: false,
+        best_model: false,
+        daily_limit: FREE_WEEKLY_LIMIT,
+      };
+    }
+    return data;
   }
 
   private getDefaultFreeEntitlement(email: string): EntitlementData {

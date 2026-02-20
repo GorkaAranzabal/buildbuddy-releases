@@ -397,6 +397,9 @@ export class WindowManager {
       this.mainWindow.setMinimumSize(320, 130);
       this.mainWindow.setMaximumSize(800, 900);
       this.mainWindow.setResizable(true);
+      // Defensive: ensure window is fully visible when expanding.
+      // Opacity may have been left at 0 by a failed/interrupted screenshot capture.
+      this.mainWindow.setOpacity(1);
     }
 
     // Notify renderer of state change

@@ -1,6 +1,5 @@
 import pkg from 'electron-updater';
 const { autoUpdater } = pkg;
-import { app } from 'electron';
 import type { BrowserWindow } from 'electron';
 
 const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
@@ -14,7 +13,10 @@ export class AutoUpdaterService {
     this.mainWindow = mainWindow;
 
     autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // Do NOT auto-install on quit — rely solely on the explicit in-app "Restart to Update"
+    // button. autoInstallOnAppQuit=true causes a race between electron-updater's before-quit
+    // hook and our own async cleanup, and it can silently fail on macOS.
+    autoUpdater.autoInstallOnAppQuit = false;
 
     autoUpdater.on('checking-for-update', () => {
       console.log('[AutoUpdater] Checking for updates...');
@@ -53,7 +55,12 @@ export class AutoUpdaterService {
   }
 
   private checkNow(): void {
-    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+    // Use checkForUpdates() — NOT checkForUpdatesAndNotify(). The "notify" variant
+    // shows a native OS notification that has its own "Install now" action calling
+    // quitAndInstall() internally without setting isUpdating=true, which bypasses
+    // our window-all-closed / before-quit guards and corrupts the update flow.
+    // Our in-app banner (via updater:update-ready) is the single update UI path.
+    autoUpdater.checkForUpdates()?.catch((err) => {
       console.error('[AutoUpdater] Check failed:', err.message);
     });
   }
@@ -67,9 +74,13 @@ export class AutoUpdaterService {
     console.log('[AutoUpdater] Installing update and restarting...');
     this.isUpdating = true;
 
-    // On macOS, quitAndInstall closes windows then quits.
-    // We need to prevent other handlers (window-all-closed, before-quit)
-    // from interfering with the updater's own quit/relaunch flow.
-    autoUpdater.quitAndInstall(true, true);
+    // On macOS (zip updater): isSilent=false is required — passing true causes the app
+    // to quit without relaunching on some macOS versions (the new binary is placed but
+    // never opened). isForceRunAfter=true ensures the new version opens after install.
+    //
+    // On Windows (NSIS): isSilent=true runs the installer without a UAC dialog chain,
+    // isForceRunAfter=true relaunches the app automatically after the installer finishes.
+    const isSilent = process.platform !== 'darwin';
+    autoUpdater.quitAndInstall(isSilent, true);
   }
 }

@@ -56,6 +56,7 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
     dailyUsage,
     setDailyUsage,
     unrealMCPStatus,
+    settings,
   } = useAppStore();
 
   // Keep ref in sync with state
@@ -625,12 +626,12 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
           />
         )}
 
-        {/* Remaining asks counter for free users */}
-        {authState?.entitlement && !authState.entitlement.features.unlimited_asks && !showUpgradePrompt && (
+        {/* Remaining asks counter for free users — hidden in dev mode */}
+        {authState?.entitlement && !authState.entitlement.features?.unlimited_asks && !showUpgradePrompt && !settings?.devMode && (
           <div className="px-4 py-1">
             <span className="text-white/30 text-xs">
               {(() => {
-                const limit = authState.entitlement.features.daily_limit ?? 10;
+                const limit = authState.entitlement.features?.daily_limit ?? 10;
                 const used = dailyUsage?.askCount ?? 0;
                 const remaining = Math.max(0, limit - used);
                 return `${remaining} ask${remaining !== 1 ? 's' : ''} remaining this week`;

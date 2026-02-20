@@ -11,10 +11,6 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ onClose, onBack, onLogout }: SettingsPanelProps) {
   const { settings, setSettings, authState, unrealMCPStatus, unrealMCPProjectInfo, setUnrealMCPStatus, setUnrealMCPProjectInfo } = useAppStore();
-  const [apiKey, setApiKey] = useState('');
-  const [provider, setProvider] = useState<'openai' | 'anthropic'>('openai');
-  const [devMode, setDevMode] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [appVersion, setAppVersion] = useState('');
 
   // UE project state
@@ -28,15 +24,12 @@ export function SettingsPanel({ onClose, onBack, onLogout }: SettingsPanelProps)
   const [isMCPStarting, setIsMCPStarting] = useState(false);
   const [isMCPTesting, setIsMCPTesting] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
+  const [isDetectingEngine, setIsDetectingEngine] = useState(false);
 
   useEffect(() => {
     if (settings) {
-      setProvider(settings.aiProvider);
-      // Don't show actual API key for security
-      setApiKey(settings.apiKey ? '••••••••••••••••' : '');
       setMcpEnabled(settings.unrealMCPEnabled ?? false);
       setUnrealEnginePath(settings.unrealEnginePath ?? '');
-      setDevMode(settings.devMode ?? false);
     }
   }, [settings]);
 
@@ -134,27 +127,31 @@ export function SettingsPanel({ onClose, onBack, onLogout }: SettingsPanelProps)
     setIsMCPTesting(false);
   };
 
-  const handleDevModeToggle = async (enabled: boolean) => {
-    setDevMode(enabled);
-    await window.electronAPI.settings.update({ devMode: enabled });
+  const handleBrowseEnginePath = async () => {
+    const chosen = await window.electronAPI.ue.browseEnginePath();
+    if (!chosen) return;
+    setUnrealEnginePath(chosen);
+    await window.electronAPI.settings.update({ unrealEnginePath: chosen });
     const updatedSettings = await window.electronAPI.settings.get();
     setSettings(updatedSettings);
   };
 
-  const handleSave = async () => {
-    setIsSaving(true);
+  const handleDetectEnginePath = async () => {
+    setIsDetectingEngine(true);
     try {
-      const newSettings = {
-        aiProvider: provider,
-        ...(apiKey && !apiKey.includes('•') ? { apiKey } : {}),
-      };
-      await window.electronAPI.settings.update(newSettings);
-      const updatedSettings = await window.electronAPI.settings.get();
-      setSettings(updatedSettings);
-    } catch (err) {
-      console.error('Failed to save settings:', err);
+      const detected = await window.electronAPI.ue.detectEnginePath();
+      if (detected) {
+        setUnrealEnginePath(detected);
+        await window.electronAPI.settings.update({ unrealEnginePath: detected });
+        const updatedSettings = await window.electronAPI.settings.get();
+        setSettings(updatedSettings);
+      } else {
+        setMcpError('No Unreal Engine installation found. Try browsing manually.');
+      }
+    } catch (err: any) {
+      setMcpError(err?.message || 'Detection failed');
     }
-    setIsSaving(false);
+    setIsDetectingEngine(false);
   };
 
   return (
@@ -221,81 +218,6 @@ export function SettingsPanel({ onClose, onBack, onLogout }: SettingsPanelProps)
               Upgrade to Pro
             </button>
           )}
-
-          {/* Dev mode toggle — DISABLE BEFORE RELEASE */}
-          <div
-            className="flex items-center justify-between px-3 py-2 rounded-lg"
-            style={{ background: devMode ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.03)', border: '1px solid rgba(239,68,68,0.15)' }}
-          >
-            <div>
-              <p className="text-xs font-medium" style={{ color: devMode ? '#f87171' : 'rgba(255,255,255,0.3)' }}>
-                Dev Mode {devMode && '⚠ ACTIVE'}
-              </p>
-              <p className="text-[10px] text-white/25">Bypasses ask limits — disable before release</p>
-            </div>
-            <button
-              onClick={() => handleDevModeToggle(!devMode)}
-              className="relative flex-shrink-0 transition-colors"
-              style={{
-                width: '36px',
-                height: '20px',
-                borderRadius: '10px',
-                background: devMode ? 'rgba(239,68,68,0.6)' : 'rgba(255,255,255,0.1)',
-              }}
-            >
-              <span
-                className="absolute top-0.5 bg-white rounded-full shadow transition-transform"
-                style={{
-                  width: '16px',
-                  height: '16px',
-                  left: '2px',
-                  transform: devMode ? 'translateX(16px)' : 'translateX(0)',
-                }}
-              />
-            </button>
-          </div>
-        </div>
-
-        {/* AI Provider */}
-        <div className="space-y-2">
-          <label className="text-white/70 text-sm">AI Provider</label>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setProvider('openai')}
-              className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                provider === 'openai'
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-white/[0.06] text-white/70 hover:bg-white/[0.1]'
-              }`}
-            >
-              OpenAI
-            </button>
-            <button
-              onClick={() => setProvider('anthropic')}
-              className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                provider === 'anthropic'
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-white/[0.06] text-white/70 hover:bg-white/[0.1]'
-              }`}
-            >
-              Anthropic
-            </button>
-          </div>
-        </div>
-
-        {/* API Key */}
-        <div className="space-y-2">
-          <label className="text-white/70 text-sm">API Key</label>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={`Enter your ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key`}
-            className="w-full px-4 py-2.5 bg-white/[0.06] border border-white/[0.1] rounded-lg text-sm text-white/90 placeholder-white/40 focus:outline-none focus:border-white/20 transition-all"
-          />
-          <p className="text-white/40 text-xs">
-            Your API key is encrypted and stored locally.
-          </p>
         </div>
 
         {/* UE Project */}
@@ -341,22 +263,68 @@ export function SettingsPanel({ onClose, onBack, onLogout }: SettingsPanelProps)
           )}
         </div>
 
-        {/* Unreal MCP */}
+        {/* Unreal Engine Remote Control */}
         <div className="space-y-3 pt-2 border-t border-white/[0.08]">
-          {/* Header + Toggle */}
+          {/* Section header */}
+          <div>
+            <label className="text-white/70 text-sm">Unreal Engine Remote Control</label>
+            <p className="text-white/35 text-xs mt-0.5">Control your Unreal Editor directly from Build Buddy</p>
+          </div>
+
+          {/* Step 1: Unreal Engine folder — required before enabling */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-white/50 text-xs">
+                <span className="text-white/25 mr-1">Step 1 ·</span>Unreal Engine Folder
+              </label>
+              <button
+                onClick={handleDetectEnginePath}
+                disabled={isDetectingEngine}
+                className="text-[11px] text-blue-400/70 hover:text-blue-400 disabled:opacity-40 transition-colors"
+              >
+                {isDetectingEngine ? 'Detecting…' : 'Auto-detect'}
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={unrealEnginePath}
+                onChange={(e) => setUnrealEnginePath(e.target.value)}
+                placeholder="/Users/Shared/Epic Games/UE_5.4"
+                className="flex-1 px-3 py-2 bg-white/[0.06] border border-white/[0.1] rounded-lg text-xs text-white/90 placeholder-white/30 focus:outline-none focus:border-white/20 transition-all"
+                onBlur={() => window.electronAPI.settings.update({ unrealEnginePath })}
+              />
+              <button
+                onClick={handleBrowseEnginePath}
+                className="px-2.5 py-2 bg-white/[0.08] hover:bg-white/[0.12] rounded-lg text-white/80 text-xs font-medium transition-all whitespace-nowrap"
+              >
+                Browse
+              </button>
+            </div>
+            {!unrealEnginePath && (
+              <p className="text-white/25 text-[11px]">Enter your Unreal Engine installation folder to continue</p>
+            )}
+          </div>
+
+          {/* Step 2: Enable toggle — locked until path is set */}
           <div className="flex items-center justify-between">
             <div>
-              <label className="text-white/70 text-sm">Unreal MCP</label>
-              <p className="text-white/35 text-xs mt-0.5">Direct Python API access via Remote Execution</p>
+              <label className={`text-sm transition-colors ${unrealEnginePath ? 'text-white/70' : 'text-white/30'}`}>
+                <span className="text-white/25 mr-1 text-xs">Step 2 ·</span>Enable Remote Control
+              </label>
+              {!unrealEnginePath && (
+                <p className="text-white/25 text-[11px] mt-0.5">Set your Unreal Engine folder first</p>
+              )}
             </div>
             <button
-              onClick={() => handleMCPToggle(!mcpEnabled)}
-              className="relative flex-shrink-0 transition-colors"
+              onClick={() => unrealEnginePath && handleMCPToggle(!mcpEnabled)}
+              disabled={!unrealEnginePath}
+              className="relative flex-shrink-0 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               style={{
                 width: '40px',
                 height: '22px',
                 borderRadius: '11px',
-                background: mcpEnabled ? '#3b82f6' : 'rgba(255,255,255,0.12)',
+                background: mcpEnabled && unrealEnginePath ? '#3b82f6' : 'rgba(255,255,255,0.12)',
               }}
             >
               <span
@@ -365,27 +333,14 @@ export function SettingsPanel({ onClose, onBack, onLogout }: SettingsPanelProps)
                   width: '18px',
                   height: '18px',
                   left: '2px',
-                  transform: mcpEnabled ? 'translateX(18px)' : 'translateX(0)',
+                  transform: mcpEnabled && unrealEnginePath ? 'translateX(18px)' : 'translateX(0)',
                 }}
               />
             </button>
           </div>
 
-          {mcpEnabled && (
+          {mcpEnabled && unrealEnginePath && (
             <>
-              {/* Unreal Engine Path */}
-              <div className="space-y-1.5">
-                <label className="text-white/50 text-xs">Unreal Engine Path</label>
-                <input
-                  type="text"
-                  value={unrealEnginePath}
-                  onChange={(e) => setUnrealEnginePath(e.target.value)}
-                  placeholder="/Users/you/UE_5.4  or  C:\Program Files\Epic Games\UE_5.4"
-                  className="w-full px-3 py-2 bg-white/[0.06] border border-white/[0.1] rounded-lg text-xs text-white/90 placeholder-white/30 focus:outline-none focus:border-white/20 transition-all"
-                  onBlur={() => window.electronAPI.settings.update({ unrealEnginePath })}
-                />
-              </div>
-
               {/* Status badge + controls */}
               <div className="flex items-center gap-2">
                 <span
@@ -475,18 +430,19 @@ export function SettingsPanel({ onClose, onBack, onLogout }: SettingsPanelProps)
                   </p>
                 </div>
               )}
+
+              {/* Reminder: update folder when switching projects */}
+              <div
+                className="px-3 py-2 rounded-lg"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}
+              >
+                <p className="text-[11px] text-white/30 leading-relaxed">
+                  Switching to a different Unreal Engine project? Update the folder above and follow the setup guide again.
+                </p>
+              </div>
             </>
           )}
         </div>
-
-        {/* Save button */}
-        <button
-          onClick={handleSave}
-          disabled={isSaving}
-          className="w-full px-4 py-2.5 bg-blue-500 hover:bg-blue-400 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-all"
-        >
-          {isSaving ? 'Saving...' : 'Save Settings'}
-        </button>
 
         {/* Version */}
         {appVersion && (

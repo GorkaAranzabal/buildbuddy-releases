@@ -15,7 +15,7 @@ import { ProjectAnalysisService } from './services/projectAnalysisService';
 import { UnrealMCPService } from './services/unrealMCPService';
 import type { AIRequest, CaptureMode, Session, UserSettings, HotkeyConfig, ActionPlanRequest, AgentAction, UECommandType, UnrealContext } from '../shared/types';
 import {
-  initAnalytics, trackAppLaunched, trackPlanIdentified,
+  initAnalytics, trackAppLaunched, trackAppInstalled, trackPlanIdentified,
   trackFeatureUsed, trackScreenCaptureTaken, trackRemoteControlCommand,
   shutdownAnalytics,
 } from './analytics';
@@ -78,11 +78,15 @@ class GorkaCopilotApp {
     // Initialize analytics with persistent anonymous device ID
     initAnalytics();
     trackAppLaunched();
+    trackAppInstalled(); // fires only on first ever launch (new install)
 
-    // Identify plan tier (no PII — just 'free' or 'pro')
+    // Identify plan tier + link email so PostHog can segment by plan
     const authState = await this.entitlementService.getAuthState();
     if (authState.isLoggedIn && authState.entitlement) {
-      trackPlanIdentified(authState.entitlement.active ? 'pro' : 'free');
+      trackPlanIdentified(
+        authState.entitlement.active ? 'pro' : 'free',
+        authState.email ?? undefined,
+      );
     }
 
     // Load settings
@@ -246,6 +250,38 @@ class GorkaCopilotApp {
       return result.canceled ? null : result.filePaths[0];
     });
 
+    ipcMain.handle('ue:browse-engine-path', async () => {
+      const { dialog } = await import('electron');
+      const result = await dialog.showOpenDialog({
+        properties: ['openDirectory'],
+        title: 'Select Unreal Engine Folder',
+        buttonLabel: 'Select',
+      });
+      return result.canceled ? null : result.filePaths[0];
+    });
+
+    ipcMain.handle('ue:detect-engine-path', async () => {
+      const { promises: fs } = await import('fs');
+      const { join } = await import('path');
+      const bases = process.platform === 'darwin'
+        ? ['/Users/Shared/Epic Games']
+        : ['C:\\Program Files\\Epic Games', 'C:\\Program Files (x86)\\Epic Games'];
+
+      for (const base of bases) {
+        try {
+          const entries = await fs.readdir(base);
+          const ueDir = entries
+            .filter((e) => /^UE_\d/i.test(e))
+            .sort()
+            .reverse()[0]; // Highest version first
+          if (ueDir) return join(base, ueDir);
+        } catch {
+          // Directory doesn't exist on this machine, try next
+        }
+      }
+      return null;
+    });
+
     ipcMain.handle('project:analyze', async (_event, projectPath: string) => {
       const analysis = await this.projectAnalysisService.analyzeProject(projectPath);
       await this.storageService.saveProjectAnalysis(analysis);
@@ -305,7 +341,10 @@ class GorkaCopilotApp {
     });
 
     // Synchronous fullscreen capture (for auto-screenshot on send)
-    // Hides the app window before capture to avoid capturing ourselves
+    // Uses setOpacity(0) instead of hide() so the window stays in the macOS
+    // window layer (preserving position and alwaysOnTop level) while becoming
+    // invisible to desktopCapturer.  hide()+show() causes the window to lose
+    // its floating level or shift position on macOS, making it appear to vanish.
     ipcMain.handle('capture:fullscreen-sync', async () => {
       try {
         // Get the display where our window currently is
@@ -313,16 +352,18 @@ class GorkaCopilotApp {
         const windowCenterX = windowBounds.x + windowBounds.width / 2;
         const windowCenterY = windowBounds.y + windowBounds.height / 2;
         console.log('[Screenshot] Window center:', windowCenterX, windowCenterY);
-        
+
         const currentDisplay = screen.getDisplayNearestPoint({ x: windowCenterX, y: windowCenterY });
         console.log('[Screenshot] Target display:', currentDisplay.id);
-        
-        // Hide our window before capturing
+
+        // Make the window invisible without removing it from the window layer.
+        // This avoids the macOS hide()+show() issue where the window loses its
+        // floating level or shifts position and appears to vanish permanently.
         const wasVisible = mainWindow.isVisible();
         console.log('[Screenshot] Window visible:', wasVisible);
         if (wasVisible) {
-          mainWindow.hide();
-          // Wait for window to fully hide
+          mainWindow.setOpacity(0);
+          // Give the compositor time to update before capturing
           await new Promise(resolve => setTimeout(resolve, 100));
         }
 
@@ -332,17 +373,19 @@ class GorkaCopilotApp {
         console.log('[Screenshot] Capture complete:', result ? `${result.imageBase64.length} bytes` : 'null');
         if (result) trackScreenCaptureTaken('fullscreen-sync');
 
-        // Show our window again
+        // Restore window opacity and bring back to front
         if (wasVisible) {
-          mainWindow.show();
+          mainWindow.setOpacity(1);
+          mainWindow.moveTop();
         }
 
         return result;
       } catch (error) {
         console.error('[Screenshot] Capture failed:', error);
-        // Make sure to show window even if capture fails
-        if (!mainWindow.isVisible()) {
-          mainWindow.show();
+        // Only restore opacity if we changed it
+        if (wasVisible) {
+          mainWindow.setOpacity(1);
+          mainWindow.moveTop();
         }
         return null;
       }
@@ -352,7 +395,7 @@ class GorkaCopilotApp {
     ipcMain.handle('auth:login', async (_event, email: string) => {
       const state = await this.entitlementService.login(email);
       if (state.entitlement) {
-        trackPlanIdentified(state.entitlement.active ? 'pro' : 'free');
+        trackPlanIdentified(state.entitlement.active ? 'pro' : 'free', email);
       }
       return state;
     });

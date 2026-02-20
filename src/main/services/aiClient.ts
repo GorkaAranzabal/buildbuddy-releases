@@ -11,6 +11,10 @@ import type {
   CaptureResult,
 } from '../../shared/types';
 
+// API key bundled at build time from VITE_OPENAI_API_KEY in .env.local
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const BUNDLED_OPENAI_KEY: string = (import.meta.env as any)?.VITE_OPENAI_API_KEY ?? '';
+
 const SYSTEM_PROMPT = `You are BuildBuddy, an AI assistant specialized in Unreal Engine game development. You can see and analyze screenshots.
 
 YOUR IDENTITY:
@@ -97,14 +101,16 @@ export class AIClientService {
     this.modelOverride = model;
   }
 
-  configure(provider: AIProvider, apiKey: string): void {
-    this.provider = provider;
+  // Prefer the key bundled at build time; fall back to the user's stored key
+  // so the app works in dev without a .env.local key.
+  configure(provider: AIProvider, userApiKey: string): void {
+    const apiKey = BUNDLED_OPENAI_KEY || userApiKey;
+    this.provider = BUNDLED_OPENAI_KEY ? 'openai' : provider;
     this.apiKey = apiKey;
-
-    if (provider === 'openai' && apiKey) {
+    if (this.provider === 'openai' && apiKey) {
       this.openai = new OpenAI({ apiKey });
       this.anthropic = null;
-    } else if (provider === 'anthropic' && apiKey) {
+    } else if (this.provider === 'anthropic' && apiKey) {
       this.anthropic = new Anthropic({ apiKey });
       this.openai = null;
     }
@@ -124,7 +130,7 @@ export class AIClientService {
     } else if (this.provider === 'anthropic' && this.anthropic) {
       yield* this.askAnthropic(userContent, screenshot, conversationHistory);
     } else {
-      throw new Error('AI provider not configured. Please set your API key in settings.');
+      throw new Error('AI service is not available. Please try again later or contact support.');
     }
 
     // Return final response (the generator will have yielded all chunks)
@@ -428,9 +434,89 @@ Spawn a static mesh actor (e.g. cube):
   mesh = unreal.load_asset('/Engine/BasicShapes/Cube')
   actor.static_mesh_component.set_static_mesh(mesh)
 
-Get selected actors:
+Get selected actors (ALWAYS try selection first, then fall back to find-by-class):
   subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
   actors = subsystem.get_selected_level_actors()
+  # If nothing selected, find by type:
+  if not actors:
+      all_actors = subsystem.get_all_level_actors()
+      actors = [a for a in all_actors if isinstance(a, unreal.StaticMeshActor)]
+
+Find all actors of a specific class in the level:
+  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+  all_actors = subsystem.get_all_level_actors()
+  # Filter by class — use isinstance:
+  static_meshes = [a for a in all_actors if isinstance(a, unreal.StaticMeshActor)]
+  dir_lights   = [a for a in all_actors if isinstance(a, unreal.DirectionalLight)]
+  point_lights = [a for a in all_actors if isinstance(a, unreal.PointLight)]
+  spot_lights  = [a for a in all_actors if isinstance(a, unreal.SpotLight)]
+  sky_lights   = [a for a in all_actors if isinstance(a, unreal.SkyLight)]
+
+Find actor by name/label:
+  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+  all_actors = subsystem.get_all_level_actors()
+  actor = next((a for a in all_actors if a.get_actor_label().lower() == 'myname'), None)
+
+LIGHTING — always search the level for existing lights first, never assume selection:
+
+  Change directional light (sun) intensity / colour:
+    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    all_actors = subsystem.get_all_level_actors()
+    dir_lights = [a for a in all_actors if isinstance(a, unreal.DirectionalLight)]
+    if dir_lights:
+        light = dir_lights[0]
+        light.light_component.set_intensity(10.0)          # lux; typical daylight = 10
+        light.light_component.set_light_color(unreal.LinearColor(1.0, 0.95, 0.8, 1.0))
+        light.set_actor_rotation(unreal.Rotator(-45, 0, 0))  # pitch controls sun angle
+    else:
+        print('No DirectionalLight found in level')
+
+  Change sky light intensity:
+    sky_lights = [a for a in all_actors if isinstance(a, unreal.SkyLight)]
+    if sky_lights:
+        sky_lights[0].sky_light_component.set_intensity(1.0)
+
+  Change point light intensity / colour:
+    point_lights = [a for a in all_actors if isinstance(a, unreal.PointLight)]
+    for l in point_lights:
+        l.point_light_component.set_intensity(1500.0)
+        l.point_light_component.set_light_color(unreal.LinearColor(1.0, 0.8, 0.6, 1.0))
+        l.point_light_component.set_attenuation_radius(500.0)
+
+  Spawn a new point light:
+    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    light = subsystem.spawn_actor_from_class(unreal.PointLight, unreal.Vector(0, 0, 300), unreal.Rotator(0, 0, 0))
+    light.point_light_component.set_intensity(1500.0)
+    light.point_light_component.set_light_color(unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
+    light.point_light_component.set_attenuation_radius(500.0)
+
+  Spawn a spot light:
+    light = subsystem.spawn_actor_from_class(unreal.SpotLight, unreal.Vector(0, 0, 400), unreal.Rotator(-90, 0, 0))
+    light.spot_light_component.set_intensity(2000.0)
+    light.spot_light_component.set_outer_cone_angle(45.0)
+
+  Spawn a directional light (sun):
+    light = subsystem.spawn_actor_from_class(unreal.DirectionalLight, unreal.Vector(0, 0, 300), unreal.Rotator(-45, 0, 0))
+    light.light_component.set_intensity(10.0)
+
+CONTENT BROWSER — folders and assets:
+
+  Create a folder (ALWAYS scan after creation so it appears in Content Browser immediately):
+    unreal.EditorAssetLibrary.make_directory('/Game/MyFolder')
+    unreal.AssetRegistryHelpers.get_asset_registry().scan_paths_synchronous(['/Game/MyFolder'], True)
+    print('Folder created: /Game/MyFolder')
+
+  List assets in a folder:
+    ar = unreal.AssetRegistryHelpers.get_asset_registry()
+    assets = ar.get_assets_by_path('/Game/MyFolder', recursive=True)
+    for a in assets:
+        print(str(a.asset_name))
+
+  Duplicate an asset:
+    unreal.EditorAssetLibrary.duplicate_asset('/Game/Source/MyAsset', '/Game/Dest/MyAssetCopy')
+
+  Delete an asset:
+    unreal.EditorAssetLibrary.delete_asset('/Game/MyFolder/MyAsset')
 
 Move / rotate / scale an actor:
   actor.set_actor_location(unreal.Vector(x, y, z))
@@ -458,9 +544,185 @@ Delete an actor:
   subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
   subsystem.destroy_actor(actor)
 
-Set material on actor:
-  mat = unreal.load_asset('/Game/path/to/material')
-  actor.static_mesh_component.set_material(0, mat)
+Set material on actor — NEVER use actor.static_mesh_component directly (breaks on Blueprint actors).
+ALWAYS use get_component_by_class which works on ANY actor type:
+  mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
+  if mesh_comp:
+      mat = unreal.load_asset('/Game/path/to/material')
+      mesh_comp.set_material(0, mat)
+
+Set material on selected actors (full safe pattern):
+  import unreal, json
+  try:
+      subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+      actors = subsystem.get_selected_level_actors()
+      if not actors:
+          print(json.dumps({'success': False, 'error': 'No actors selected'}))
+      else:
+          mat = unreal.load_asset('/Game/path/to/material')
+          changed = 0
+          for actor in actors:
+              mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
+              if mesh_comp and mat:
+                  mesh_comp.set_material(0, mat)
+                  changed += 1
+          print(json.dumps({'success': True, 'changed': changed}))
+  except Exception as e:
+      print(json.dumps({'success': False, 'error': str(e)}))
+
+Find a material by name and apply it to selected actors (when user doesn't know exact path):
+  import unreal, json
+  try:
+      subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+      actors = subsystem.get_selected_level_actors()
+      ar = unreal.AssetRegistryHelpers.get_asset_registry()
+      all_assets = ar.get_all_assets()
+      term = 'rock'.lower()
+      mats = [a for a in all_assets if 'material' in str(a.asset_class).lower() and term in str(a.asset_name).lower()]
+      if not mats:
+          print(json.dumps({'success': False, 'error': f'No material matching "{term}" found'}))
+      else:
+          mat = unreal.load_asset(str(mats[0].object_path))
+          for actor in actors:
+              mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
+              if mesh_comp:
+                  mesh_comp.set_material(0, mat)
+          print(json.dumps({'success': True, 'material': str(mats[0].asset_name)}))
+  except Exception as e:
+      print(json.dumps({'success': False, 'error': str(e)}))
+
+SELECTION & VIEWPORT:
+
+  Select actors by name or class (makes them visible in UE outliner):
+    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    all_actors = subsystem.get_all_level_actors()
+    targets = [a for a in all_actors if a.get_actor_label().lower() == 'cube_01']
+    subsystem.set_selected_level_actors(targets)
+
+  Deselect all:
+    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    subsystem.set_selected_level_actors([])
+
+  Focus viewport on selected actor:
+    unreal.SystemLibrary.execute_console_command(None, 'actor focus')
+
+ACTOR OPERATIONS:
+
+  Rename an actor (change its label in the Outliner):
+    actor.set_actor_label('NewName')
+
+  Hide / show an actor in the editor viewport:
+    actor.set_is_temporarily_hidden_in_editor(True)   # hide
+    actor.set_is_temporarily_hidden_in_editor(False)  # show
+
+  Duplicate selected actors:
+    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    duplicates = subsystem.duplicate_selected_actors(unreal.Vector(100, 0, 0))  # offset
+
+  Attach actor B to actor A (parent/child):
+    actor_b.attach_to_actor(actor_a, '', unreal.AttachmentRule.KEEP_WORLD, unreal.AttachmentRule.KEEP_WORLD, unreal.AttachmentRule.KEEP_WORLD, False)
+
+  Detach actor from parent:
+    actor.detach_from_actor(unreal.DetachmentRule.KEEP_WORLD, unreal.DetachmentRule.KEEP_WORLD, unreal.DetachmentRule.KEEP_WORLD)
+
+  Set actor mobility (must be done via set_editor_property):
+    actor.root_component.set_editor_property('mobility', unreal.ComponentMobility.MOVABLE)
+    # Options: STATIC, STATIONARY, MOVABLE
+
+  Enable/disable physics on a static mesh actor:
+    actor.static_mesh_component.set_simulate_physics(True)
+    actor.static_mesh_component.set_editor_property('collision_enabled', unreal.CollisionEnabled.QUERY_AND_PHYSICS)
+
+  Generic property setter (use when no dedicated setter exists):
+    actor.set_editor_property('hidden', True)
+    actor.set_editor_property('tags', ['mytag'])
+    component.set_editor_property('cast_shadow', False)
+
+BLUEPRINT:
+
+  Create a new Blueprint asset (does NOT edit the graph — only creates the asset):
+    import unreal
+    factory = unreal.BlueprintFactory()
+    factory.set_editor_property('parent_class', unreal.Actor)
+    asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
+    bp = asset_tools.create_asset('MyBlueprint', '/Game/Blueprints', unreal.Blueprint, factory)
+    unreal.EditorAssetLibrary.save_asset(bp.get_path_name())
+    print('Blueprint created: ' + bp.get_path_name())
+
+  Open an asset (Blueprint, Material, etc.) in its editor:
+    unreal.AssetEditorSubsystem().open_editor_for_assets([unreal.load_asset('/Game/Blueprints/MyBlueprint')])
+
+  Compile all Blueprints:
+    unreal.SystemLibrary.execute_console_command(None, 'blueprints compileall')
+
+WORLD ENVIRONMENT:
+
+  Exponential height fog — find or spawn:
+    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    all_actors = subsystem.get_all_level_actors()
+    fogs = [a for a in all_actors if isinstance(a, unreal.ExponentialHeightFog)]
+    if fogs:
+        fog_comp = fogs[0].get_component_by_class(unreal.ExponentialHeightFogComponent)
+        fog_comp.set_editor_property('fog_density', 0.02)
+        fog_comp.set_editor_property('fog_inscattering_color', unreal.LinearColor(0.5, 0.6, 0.7, 1.0))
+    else:
+        fog = subsystem.spawn_actor_from_class(unreal.ExponentialHeightFog, unreal.Vector(0,0,0), unreal.Rotator(0,0,0))
+
+  Sky atmosphere — find and adjust:
+    sky_atm = [a for a in all_actors if isinstance(a, unreal.SkyAtmosphere)]
+    if sky_atm:
+        comp = sky_atm[0].get_component_by_class(unreal.SkyAtmosphereComponent)
+        comp.set_editor_property('rayleigh_scattering_scale', 0.0331)
+
+  Post Process Volume — find and adjust (bloom, exposure, colour grading):
+    ppvs = [a for a in all_actors if isinstance(a, unreal.PostProcessVolume)]
+    if ppvs:
+        ppv = ppvs[0]
+        settings = ppv.settings
+        settings.set_editor_property('bloom_intensity', 1.5)
+        settings.set_editor_property('auto_exposure_bias', 1.0)
+        settings.set_editor_property('vignette_intensity', 0.4)
+        ppv.settings = settings
+    else:
+        ppv = subsystem.spawn_actor_from_class(unreal.PostProcessVolume, unreal.Vector(0,0,0), unreal.Rotator(0,0,0))
+        ppv.set_editor_property('infinite_extent', True)
+
+ADDITIONAL LIGHT TYPES:
+
+  Rect light (area light):
+    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    light = subsystem.spawn_actor_from_class(unreal.RectLight, unreal.Vector(0, 0, 300), unreal.Rotator(-90, 0, 0))
+    light.rect_light_component.set_intensity(2000.0)
+    light.rect_light_component.set_editor_property('source_width', 100.0)
+    light.rect_light_component.set_editor_property('source_height', 50.0)
+
+LEVEL MANAGEMENT:
+
+  Get current level name:
+    import unreal, json
+    world = unreal.EditorLevelUtils if False else None
+    sub = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+    print(json.dumps({'level': str(sub.get_editor_world().get_name())}))
+
+  Open a level:
+    unreal.EditorLoadingAndSavingUtils.load_map('/Game/Maps/MyLevel')
+
+  Play in Editor (PIE):
+    unreal.SystemLibrary.execute_console_command(None, 'ce StartPlay')
+    # Or use: editor subsystem
+    unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).play_in_editor()
+
+  Stop PIE:
+    unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).eject_pilot_level_actor()
+    unreal.SystemLibrary.execute_console_command(None, 'ce StopPlay')
+
+ALWAYS wrap scripts in try/except and print results as JSON:
+  import unreal, json
+  try:
+      # ... your code ...
+      print(json.dumps({'success': True, 'message': 'Done'}))
+  except Exception as e:
+      print(json.dumps({'success': False, 'error': str(e)}))
 ${cameraContext}
 ${projectInfo ? `PROJECT CONTEXT:\n${projectInfo}\n` : ''}Output ONLY the Python script:`;
 
@@ -645,8 +907,8 @@ Respond with JSON only:`;
       console.log('[AIClient] Using Anthropic...');
       return this.requestActionPlanAnthropic(actionPlanPrompt, screenshot);
     } else {
-      console.error('[AIClient] ❌ AI provider not configured!');
-      throw new Error('AI provider not configured. Please set your API key in settings.');
+      console.error('[AIClient] ❌ AI service not available!');
+      throw new Error('AI service is not available. Please try again later or contact support.');
     }
   }
 

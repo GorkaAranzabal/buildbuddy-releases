@@ -153,6 +153,8 @@ const electronAPI = {
 
   // Unreal Engine commands
   ue: {
+    browseEnginePath: () => ipcRenderer.invoke('ue:browse-engine-path'),
+    detectEnginePath: () => ipcRenderer.invoke('ue:detect-engine-path'),
     isConnected: () => ipcRenderer.invoke('ue:is-connected'),
     executeCommand: (command, params) => ipcRenderer.invoke('ue:execute-command', command, params),
     // Blueprint
