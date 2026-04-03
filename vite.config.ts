@@ -16,11 +16,18 @@ export default defineConfig({
           build: {
             outDir: path.join(__dirname, 'dist/main'),
             rollupOptions: {
-              external: [
-                'electron', 'electron-updater', 'ws', 'lowdb', 'lowdb/node',
-                'openai', '@anthropic-ai/sdk', 'electron-store', '@jitsi/robotjs',
-                'unreal-remote-execution', 'posthog-node',
-              ],
+              external: (id) => {
+                const exactExternals = [
+                  'electron', 'electron-updater', 'ws', 'lowdb', 'lowdb/node',
+                  'openai', '@anthropic-ai/sdk', 'electron-store', '@jitsi/robotjs',
+                  'unreal-remote-execution', 'posthog-node',
+                ];
+                if (exactExternals.includes(id)) return true;
+                if (id.startsWith('@modelcontextprotocol/sdk')) return true;
+                if (id.startsWith('@runreal/unreal-mcp')) return true;
+                if (id.startsWith('node:')) return true;
+                return false;
+              },
             },
           },
         },
@@ -50,6 +57,7 @@ export default defineConfig({
       '@shared': path.resolve(__dirname, 'src/shared'),
     },
   },
+  envDir: __dirname,
   root: path.join(__dirname, 'src/renderer'),
   base: './',
   build: {

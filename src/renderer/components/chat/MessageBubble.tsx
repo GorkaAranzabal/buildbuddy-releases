@@ -1,8 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { ChatMessage, DocImage } from '../../../shared/types';
 import { parseContentParts } from './contentParser';
 import { DocImageEmbed } from './DocImageEmbed';
+import { useAppStore } from '../../store';
+
+/** Extract numbered-list steps from an assistant message, returns [] if none found. */
+function extractSteps(content: string): string[] {
+  const lines = content.split('\n');
+  const steps: string[] = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*\d+[\.\)]\s+(.+)/);
+    if (match) steps.push(match[1].trim());
+  }
+  return steps;
+}
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -79,7 +91,19 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const [cachedDocImages, setCachedDocImages] = useState<Record<string, DocImage[]>>(
     message.docImages ?? {}
   );
+  const { enterGuidedMode, guidedSteps } = useAppStore();
   const isUser = message.role === 'user';
+
+  // Detect numbered steps in assistant messages so we can offer guided mode
+  const steps = useMemo(() => {
+    if (isUser) return [];
+    return extractSteps(message.content);
+  }, [isUser, message.content]);
+
+  const handleWalkThrough = () => {
+    if (steps.length === 0) return;
+    enterGuidedMode(steps, message.id, message.content);
+  };
 
   const handleDocImagesLoaded = (query: string, images: DocImage[]) => {
     setCachedDocImages((prev) => ({ ...prev, [query]: images }));
@@ -131,21 +155,47 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </div>
         )}
 
-        {/* Attached screenshot indicator */}
-        {message.attachedScreenshot && (
-          <div className="mt-1.5 flex items-center justify-end gap-1 text-xs text-white/50">
-            <span>Sent with screenshot</span>
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-              />
-            </svg>
+        {/* Badges: remote control order + screenshot */}
+        {(message.isOrder || message.attachedScreenshot) && (
+          <div className="mt-1.5 flex items-center justify-end gap-2.5 flex-wrap">
+            {message.isOrder && (
+              <div className="flex items-center gap-1 text-xs text-purple-300/70">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span>Remote control</span>
+              </div>
+            )}
+            {message.attachedScreenshot && (
+              <div className="flex items-center gap-1 text-xs text-white/50">
+                <span>Sent with screenshot</span>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                  />
+                </svg>
+              </div>
+            )}
           </div>
         )}
 
+
+        {/* "Walk me through this" guided mode button — shown on assistant messages with numbered steps */}
+        {!isUser && steps.length >= 2 && !guidedSteps && (
+          <button
+            onClick={handleWalkThrough}
+            className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 border border-blue-400/25 text-blue-300 text-xs font-medium transition-all"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Walk me through this
+          </button>
+        )}
 
         {/* Copy button (assistant messages only) */}
         {!isUser && (

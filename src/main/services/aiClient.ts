@@ -9,69 +9,124 @@ import type {
   ActionPlan,
   ActionPlanRequest,
   CaptureResult,
+  ClickTarget,
+  MCPToolDefinition,
+  MCPToolResult,
+  SelectedEngine,
 } from '../../shared/types';
 
-// API key bundled at build time from VITE_OPENAI_API_KEY in .env.local
+// Dev-only fallback keys. In production builds these are empty strings — the app
+// routes AI calls through the backend proxy (build-buddy.app/api/ai/chat) instead
+// of embedding keys in the ASAR bundle.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const BUNDLED_OPENAI_KEY: string = (import.meta.env as any)?.VITE_OPENAI_API_KEY ?? '';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const BUNDLED_GEMINI_KEY: string = (import.meta.env as any)?.VITE_GEMINI_API_KEY ?? '';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const BUNDLED_ANTHROPIC_KEY: string = (import.meta.env as any)?.VITE_ANTHROPIC_API_KEY ?? '';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const BUNDLED_OPENROUTER_KEY: string = (import.meta.env as any)?.VITE_OPENROUTER_API_KEY ?? '';
 
-const SYSTEM_PROMPT = `You are BuildBuddy, an AI assistant specialized in Unreal Engine game development. You can see and analyze screenshots.
+const PROXY_BASE_URL = 'https://build-buddy.app/api/ai/chat';
 
-YOUR IDENTITY:
-- You are specifically designed to help with Unreal Engine development
-- You have deep knowledge of UE5, Blueprints, C++, materials, animations, and all UE systems
-- When answering UE questions, reference official Unreal Engine documentation when helpful (docs.unrealengine.com)
+// ─── Developer Backend Switch ────────────────────────────────────────────────
+// Set ACTIVE_AI_BACKEND to 'openai', 'gemini', 'anthropic', or 'openrouter'.
+export const ACTIVE_AI_BACKEND: 'openai' | 'gemini' | 'anthropic' | 'openrouter' = 'openrouter';
 
-SCREENSHOT ANALYSIS (CONTEXT-AWARE):
-Every message includes a screenshot of the user's screen. How you handle it depends on the conversation flow:
+const PRIMARY_MODEL = ACTIVE_AI_BACKEND === 'gemini' ? 'gemini-2.5-flash'
+  : ACTIVE_AI_BACKEND === 'anthropic' ? 'claude-sonnet-4-6'
+  : ACTIVE_AI_BACKEND === 'openrouter' ? 'google/gemini-2.5-flash'
+  : 'gpt-4o';
+const CHEAP_MODEL   = ACTIVE_AI_BACKEND === 'gemini' ? 'gemini-2.5-flash'
+  : ACTIVE_AI_BACKEND === 'anthropic' ? 'claude-haiku-4-5-20251001'
+  : ACTIVE_AI_BACKEND === 'openrouter' ? 'google/gemini-2.5-flash'
+  : 'gpt-4o-mini';
+// Model used for tool-calling (remote control / MCP). Always Anthropic Sonnet
+// regardless of which backend handles regular chat.
+const ANTHROPIC_TOOLS_MODEL = 'claude-sonnet-4-6';
+// OpenRouter model ID for tool-calling.
+const OPENROUTER_TOOLS_MODEL = 'minimax/minimax-m2.5';
+// Models that do not support vision/image inputs — screenshot is stripped before sending.
+const TEXT_ONLY_MODELS = new Set(['minimax/minimax-m2.5', 'minimax/minimax-m2.5:free']);
 
-FIRST MESSAGE or NEW CONTEXT (user switched windows/panels/topics since last message):
-- START your response by briefly acknowledging what you see (e.g., "I can see you have the Animation Editor open with a skeleton...")
-- Identify the application they're using (Unreal Engine, Blender, Unity, etc.)
-- If they're in Unreal Engine, mention specific panels, nodes, assets, or errors visible
-- Then answer their question while relating it to what's on screen
+interface EnginePromptConfig {
+  name: string;
+  docsUrl: string;
+  primaryObject: string;
+  primaryLanguages: string;
+  specialties: string[];
+  communityNote: string;
+}
 
-FOLLOW-UP on the SAME TOPIC (same window/panel, continuing the discussion):
-- Do NOT repeat "I can see you have X open..." — the user already knows you see their screen
-- Jump straight into answering their follow-up question naturally
-- You may briefly reference something NEW on screen if it changed (e.g., "I see you've now compiled and the error is gone")
-- Keep the conversation flowing naturally, like a real colleague helping them
+const ENGINE_CONFIGS: Record<NonNullable<SelectedEngine>, EnginePromptConfig> = {
+  unreal: {
+    name: 'Unreal Engine 5',
+    docsUrl: 'https://dev.epicgames.com/documentation/en-us/unreal-engine',
+    primaryObject: 'Actor',
+    primaryLanguages: 'C++ and Blueprint visual scripting',
+    specialties: ['Blueprints', 'C++', 'Nanite', 'Lumen', 'Niagara', 'Animation/Sequencer', 'UMG UI', 'Multiplayer/networking', 'AI/behavior trees'],
+    communityNote: 'Unreal forums, GitHub issues, dev.epicgames.com community',
+  },
+  godot: {
+    name: 'Godot Engine',
+    docsUrl: 'https://docs.godotengine.org',
+    primaryObject: 'Node',
+    primaryLanguages: 'GDScript and C#',
+    specialties: ['Scenes & Nodes', 'GDScript', 'Signals & exports', 'Physics', 'Animation player', 'Shaders (Godot shading language)', 'Multiplayer (ENet/WebSockets)'],
+    communityNote: 'Godot community forums, Reddit r/godot, GitHub discussions',
+  },
+  unity: {
+    name: 'Unity',
+    docsUrl: 'https://docs.unity3d.com',
+    primaryObject: 'GameObject',
+    primaryLanguages: 'C# and Visual Scripting',
+    specialties: ['MonoBehaviour', 'Prefabs & ScriptableObjects', 'Physics (Rigidbody)', 'Animator & Timeline', 'UI Toolkit / Canvas', 'DOTS/ECS', 'Addressables'],
+    communityNote: 'Unity forums, Unity Discussions, Stack Overflow',
+  },
+  blender: {
+    name: 'Blender',
+    docsUrl: 'https://docs.blender.org',
+    primaryObject: 'Object',
+    primaryLanguages: 'Python (bpy API) and GLSL',
+    specialties: ['Modeling & sculpting', 'Materials & Shader nodes', 'Geometry Nodes', 'Animation & rigging', 'Python scripting (bpy)', 'Rendering (Cycles/EEVEE)', 'Compositing'],
+    communityNote: 'Blender Artists community, Blender Stack Exchange, r/blender',
+  },
+  roblox: {
+    name: 'Roblox Studio',
+    docsUrl: 'https://create.roblox.com/docs',
+    primaryObject: 'Part / Instance',
+    primaryLanguages: 'Lua (Luau)',
+    specialties: ['Scripts, LocalScripts & ModuleScripts', 'RemoteEvents & RemoteFunctions', 'DataStore', 'Physics & constraints', 'Tween Service', 'Humanoid & Character', 'UI (ScreenGui)'],
+    communityNote: 'Roblox DevForum, Creator Hub, r/robloxgamedev',
+  },
+  uefn: {
+    name: 'Unreal Editor for Fortnite (UEFN)',
+    docsUrl: 'https://dev.epicgames.com/documentation/en-us/uefn',
+    primaryObject: 'Actor / Creative Device',
+    primaryLanguages: 'Verse and Python (via Remote Execution)',
+    specialties: ['Verse scripting', 'Creative devices', 'Island logic', 'Player progression', 'Python Remote Execution', 'Asset placement', 'Fortnite-specific gameplay systems'],
+    communityNote: 'Epic Games dev forums, UEFN Discord, dev.epicgames.com/community',
+  },
+};
 
-HOW TO DECIDE: Compare the current screenshot context to the previous messages. If the user is clearly in the same editor/panel working on the same thing, treat it as a follow-up. If they've moved to a different window, panel, or topic, treat it as a new context and re-acknowledge what you see.
+function buildSystemPrompt(engine: SelectedEngine): string {
+  const cfg = engine ? ENGINE_CONFIGS[engine] : ENGINE_CONFIGS.unreal;
 
-WHEN USER IS IN OTHER SOFTWARE:
-If you detect the user is using software OTHER than Unreal Engine (like Blender, Unity, Godot, Maya, etc.):
-- You CAN still help them - you're knowledgeable about game dev tools
-- BUT mention briefly: "I notice you're using [Software]. While I'm primarily focused on Unreal Engine, I'm happy to help with this too!"
-- Still provide helpful assistance for their question
+  const specialtiesList = cfg.specialties.map(s => `- ${s}`).join('\n');
 
-YOUTUBE VIDEO RECOMMENDATIONS (Gorka Games Channel ONLY):
-When the user asks for video tutorials, learning resources, or says things like "show me a video", "recommend a tutorial", "is there a video about this":
-- Recommend the "Gorka Games" YouTube channel: https://www.youtube.com/@GorkaGames
-- NEVER make up or guess video IDs - you don't know the actual video IDs
-- Simply say something like: "Check out the **Gorka Games** YouTube channel for great UE5 tutorials! Here's the channel: https://www.youtube.com/@GorkaGames"
-- You can mention that Gorka Games has tutorials on UE5, Blueprints, game mechanics, and more
-- Only recommend the channel when the user explicitly asks for video tutorials/resources
+  const docSection = engine === 'unreal' ? `
+WHEN ANSWERING ${cfg.name.toUpperCase()} QUESTIONS:
+- Prefer official documentation (${cfg.docsUrl}) as your primary reference — but do not limit yourself to it
+- Official docs can be outdated or missing coverage for newer/niche features; draw freely on community knowledge: ${cfg.communityNote}, blog posts, real-world experience, and your own training data
+- Always give the best practical answer even if no official doc page exists for the topic` : `
+WHEN ANSWERING ${cfg.name.toUpperCase()} QUESTIONS:
+- Prefer official documentation (${cfg.docsUrl}) as your primary reference
+- Draw on community knowledge too: ${cfg.communityNote}, tutorials, blog posts, and your own training data
+- Always give the best practical answer even if no official doc page exists for the topic`;
 
-UNREAL ENGINE EXPERTISE:
-You are an expert in:
-- Packaging errors, compile issues, and runtime problems
-- Blueprint visual scripting and C++ development
-- Materials, shaders, and rendering
-- Animation, Sequencer, and cinematics
-- AI, behavior trees, and navigation
-- Multiplayer and networking
-- UI with UMG/Slate
-- Editor navigation and project settings
-
-FORMATTING RULES (IMPORTANT):
-- When referring to UI elements, buttons, menu items, tabs, or keyboard shortcuts, wrap them in backticks
-- Examples: Click on the \`File\` menu, then select \`Save\`. Press \`Ctrl+S\` to save.
-- Examples: Go to the \`Content Browser\` panel. Click the \`Compile\` button.
-- This helps users quickly identify interactive elements they need to click or use
-
+  const docImageNote = engine === 'unreal' ? `
 DOCUMENTATION IMAGES (USE SPARINGLY - MAX 2 PER RESPONSE):
-When your explanation involves a UE concept with a strong visual component (Blueprint graph layouts, material editor examples, animation state machines, editor panel configurations, node setups), you MAY insert a documentation image marker on its own line:
+When your explanation involves a concept with a strong visual component (Blueprint graph layouts, material editor examples, animation state machines, editor panel configurations, node setups), you MAY insert a documentation image marker on its own line:
 
 Format: [[DOC_IMAGE:descriptive search query]]
 
@@ -81,9 +136,266 @@ Rules:
 - Only use when the visual genuinely adds value beyond your text explanation
 - Write specific, targeted queries: "Unreal Engine Character Movement Component settings panel" is better than "movement"
 - Do NOT use for pure code questions, error messages, or conceptual explanations that need no visual
-- Do NOT use if you're unsure whether a relevant doc page exists
+- Do NOT use if you're unsure whether a relevant doc page exists` : '';
 
-Be conversational, friendly, and helpful. You're their buddy for building games!`;
+  return `You are BuildBuddy, an AI assistant specialized in ${cfg.name} development. You can see and analyze screenshots.
+
+YOUR IDENTITY:
+- You are specifically designed to help with ${cfg.name} development
+- You have deep knowledge of ${cfg.name} — including ${cfg.primaryLanguages}, and all core systems
+- Primary objects/entities in this engine are called: ${cfg.primaryObject}
+${docSection}
+
+YOUR ${cfg.name.toUpperCase()} EXPERTISE:
+${specialtiesList}
+
+SCREENSHOT ANALYSIS (CONTEXT-AWARE):
+Every message includes a screenshot of the user's screen. How you handle it depends on the conversation flow:
+
+FIRST MESSAGE or NEW CONTEXT (user switched windows/panels/topics since last message):
+- START your response by briefly acknowledging what you see (e.g., "I can see you have the ${cfg.primaryObject} editor open...")
+- Identify the application they're using (${cfg.name}, or something else)
+- Mention specific panels, nodes, assets, or errors visible
+- Then answer their question while relating it to what's on screen
+
+FOLLOW-UP on the SAME TOPIC (same window/panel, continuing the discussion):
+- Do NOT repeat "I can see you have X open..." — the user already knows you see their screen
+- Jump straight into answering their follow-up question naturally
+- You may briefly reference something NEW on screen if it changed
+- Keep the conversation flowing naturally, like a real colleague helping them
+
+HOW TO DECIDE: Compare the current screenshot context to the previous messages. If the user is clearly in the same editor/panel working on the same thing, treat it as a follow-up. If they've moved to a different window, panel, or topic, treat it as a new context and re-acknowledge what you see.
+
+YOUTUBE VIDEO RECOMMENDATIONS (Gorka Games Channel ONLY):
+When the user asks for video tutorials, learning resources, or says things like "show me a video", "recommend a tutorial", "is there a video about this":
+- Recommend the "Gorka Games" YouTube channel: https://www.youtube.com/@GorkaGames
+- NEVER make up or guess video IDs - you don't know the actual video IDs
+- Simply say something like: "Check out the **Gorka Games** YouTube channel for tutorials! Here's the channel: https://www.youtube.com/@GorkaGames"
+- Only recommend the channel when the user explicitly asks for video tutorials/resources
+
+FORMATTING RULES (IMPORTANT):
+- When referring to UI elements, buttons, menu items, tabs, or keyboard shortcuts, wrap them in backticks
+- Examples: Click on the \`File\` menu, then select \`Save\`. Press \`Ctrl+S\` to save.
+- This helps users quickly identify interactive elements they need to click or use
+- When your answer involves 3 or more sequential steps, ALWAYS use numbered list format starting at 1:
+  1. First step description
+  2. Second step description
+  3. Third step description
+  Never use bullet points, bold headers, or "Step N:" style for multi-step instructions — use plain numbered format only
+${docImageNote}
+Be conversational, friendly, and helpful. You're their buddy for building in ${cfg.name}!`;
+}
+
+// Keep the constant for reference / backward compat (used as UE5 default)
+const SYSTEM_PROMPT = buildSystemPrompt('unreal');
+
+const TOOL_CALLING_ADDENDUM_UE5 = `
+
+UNREAL ENGINE TOOL USE:
+You have tools connected to the user's Unreal Editor through MCP (Model Context Protocol).
+You can call these tools to perform actions directly in the editor — create objects, move actors, query the scene, run Python, take screenshots, and more.
+
+WHEN TO USE TOOLS:
+- The user asks you to CREATE, MOVE, DELETE, SPAWN, MODIFY, or BUILD something in Unreal → use tools
+- The user asks about what's in their scene, what actors exist, project info → use tools to query real data
+- The user asks a question that could be answered with real editor data → use tools, then explain the result
+
+WHEN NOT TO USE TOOLS (answer conversationally instead):
+- The user asks a knowledge/concept question ("what is a Blueprint?", "how does X work?", "why does Y happen?", "explain X", "what's the difference between…") → answer directly, no tools
+- The user is asking for advice or clarification with no explicit editor action requested → answer directly
+- Questions that start with "what", "how does", "why", "explain", "can you tell me", "what's the best way to" with no imperative action → no tools needed
+
+LIVE EDITOR STATE:
+Each message includes a "LIVE EDITOR STATE" section with the current viewport camera position/rotation and any selected actors (with their exact names, classes, locations, and scales). USE THIS DATA:
+- When user says "in front of the camera" or "where I'm looking" → compute a position ~500-1000 units in front of the camera using its location + forward vector from the yaw
+- When user says "this", "the selected", "make it bigger", etc. → they mean the selected actors listed in the state. Use the exact actor name/label from the state.
+- When user says "make it 3x larger" → multiply the CURRENT scale values from the state by 3. Do NOT just set scale to (3,3,3).
+- When no actors are selected and user refers to an actor by description → use editor_get_world_outliner to find the exact name, then operate on it.
+
+TOOL CALLING GUIDELINES:
+- Prefer high-level tools (editor_create_object, editor_update_object, editor_delete_object) for simple transforms and spawning
+- Use editor_run_python for complex operations, multi-step logic, or anything the high-level tools can't do alone
+- When using editor_run_python: always start with "import unreal", wrap in try/except, use print(json.dumps(...)) for output
+- After making changes, briefly confirm what you did and the final values
+- If a tool call fails, analyze the error and try an alternative approach
+- You may chain multiple tool calls in one response (e.g., query scene first, then create/modify)
+
+COMPUTING "IN FRONT OF CAMERA":
+Given camera location (cx, cy, cz) and yaw angle:
+  import math
+  forward_x = math.cos(math.radians(yaw))
+  forward_y = math.sin(math.radians(yaw))
+  spawn_x = cx + forward_x * 800
+  spawn_y = cy + forward_y * 800
+  spawn_z = cz  # same height, or adjust as needed
+
+RELATIVE TRANSFORMS:
+When the user says "make it bigger/smaller/twice/3x":
+- Read the current scale from the LIVE EDITOR STATE
+- MULTIPLY the current scale by the factor — do NOT replace it
+- Example: current scale is (1.5, 1.5, 1.5) and user says "3x larger" → set scale to (4.5, 4.5, 4.5)
+
+EDITOR_UPDATE_OBJECT:
+- The actor_name parameter accepts either the internal name (e.g. "StaticMeshActor_0") or the label (e.g. "MyCube")
+- Use the label from SELECTED ACTORS when available
+
+EDITOR_RUN_PYTHON PATTERNS:
+When high-level tools are insufficient, use these UE5 Python patterns:
+
+Get selected actors:
+  import unreal
+  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+  selected = subsystem.get_selected_level_actors()
+
+Set actor scale (relative):
+  actor.set_actor_scale3d(unreal.Vector(current_x * factor, current_y * factor, current_z * factor))
+
+Set material on a StaticMeshActor:
+  mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
+  mat = unreal.EditorAssetLibrary.load_asset("/Game/Path/To/Material")
+  mesh_comp.set_material(0, mat)
+
+Create dynamic material instance:
+  mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
+  dyn_mat = mesh_comp.create_dynamic_material_instance(0)
+  dyn_mat.set_vector_parameter_value("BaseColor", unreal.LinearColor(r=1.0, g=0.0, b=0.0, a=1.0))
+
+Set light color/intensity:
+  light_comp = actor.get_component_by_class(unreal.PointLightComponent)
+  light_comp.set_light_color(unreal.LinearColor(r=1.0, g=0.8, b=0.6, a=1.0))
+  light_comp.set_intensity(5000.0)
+
+Get/set viewport camera:
+  loc, rot = unreal.EditorLevelLibrary.get_level_viewport_camera_info()
+  unreal.EditorLevelLibrary.set_level_viewport_camera_info(new_loc, new_rot)
+
+IMPORTANT API NOTES:
+- NEVER use EditorLevelLibrary.get_all_level_actors() — it is deprecated. Use EditorActorSubsystem.get_all_level_actors() instead.
+- EditorLevelLibrary.spawn_actor_from_class() still works for spawning.
+- EditorLevelLibrary.get_level_viewport_camera_info() and set_level_viewport_camera_info() are the correct camera APIs.
+- For subsystems: unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+- For finding actors by name, iterate get_all_level_actors() and match get_actor_label() or get_name().
+
+BLUEPRINT TOOLS (dedicated tools — DO NOT use editor_run_python for these):
+You have dedicated Blueprint tools. Always prefer them over editor_run_python for Blueprint work.
+
+CREATE & SPAWN:
+- create_blueprint(name, parent_class) → creates a new Blueprint asset in /Game/Blueprints/. parent_class: "Actor", "Pawn", "Character", "PlayerController", "GameModeBase", "ActorComponent", etc.
+- spawn_blueprint_actor(blueprint_name, actor_name, location?, rotation?) → spawns an instance into the current level
+- compile_blueprint(blueprint_name) → compiles and saves; always call after making changes
+
+ADD COMPONENTS:
+- add_component_to_blueprint(blueprint_name, component_type, component_name) → adds a component to the Blueprint's SCS. component_type examples: "StaticMeshComponent", "CameraComponent", "SpringArmComponent", "SceneComponent", "PointLightComponent", "BoxComponent", "SphereComponent", "CapsuleComponent", "AudioComponent", "ArrowComponent"
+- set_static_mesh_on_component(blueprint_name, component_name, mesh_path?) → sets the static mesh on a component (e.g., mesh_path="/Engine/BasicShapes/Cube")
+- set_component_property(blueprint_name, component_name, property_name, property_value) → set any property on a component (e.g., RelativeLocation, RelativeScale3D, bVisible, CastShadow, etc.)
+- set_physics_properties(blueprint_name, component_name, simulate_physics?, enable_gravity?, mass_kg?, linear_damping?, angular_damping?)
+- get_blueprint_components(blueprint_name) → lists all components, their types, and properties
+
+VARIABLES & STRUCTURE:
+- add_blueprint_variable(blueprint_name, variable_name, variable_type, instance_editable?, blueprint_read_only?, expose_on_spawn?, replicated?, save_game?, is_private?, category?, default_value?) → variable_type: "Boolean", "Integer", "Float", "String", "Vector", "Rotator", "Transform", "Name", "Text", "Object"
+- set_blueprint_property(blueprint_name, property_name, property_value) → sets a property on the Blueprint's Class Default Object (CDO), e.g., max health, speed defaults
+- add_blueprint_function(blueprint_name, function_name) → adds an empty function graph (visible in Blueprint editor; user wires logic manually)
+- remove_blueprint_function(blueprint_name, function_name)
+- add_blueprint_interface(blueprint_name, interface_name) → makes the Blueprint implement an interface
+- remove_blueprint_interface(blueprint_name, interface_name)
+- reparent_blueprint(blueprint_name, new_parent_class) → changes the parent class
+
+UI / WIDGET BLUEPRINTS:
+- edit_widget_blueprint(blueprint_name, action, widget_type?, widget_name?, parent_name?, properties?) → create/configure/remove UMG widgets. action: "add_widget", "remove_widget", "set_property". widget_type examples: "Button", "Text", "Image", "VerticalBox", "HorizontalBox", "CanvasPanel"
+
+INPUT (Legacy):
+- create_input_mapping(action_name, key, input_type?) → creates Action or Axis mapping (legacy input system)
+- create_input_mapping_context(name) → creates a UE5 Enhanced Input Mapping Context asset
+- add_input_mapping(context_name, action_name, key, triggers?, modifiers?) → maps a key to an Enhanced Input Action
+
+BLUEPRINT WORKFLOW EXAMPLE — creating a rotating Actor Blueprint:
+1. create_blueprint("BP_RotatingCube", "Actor")
+2. add_component_to_blueprint("BP_RotatingCube", "StaticMeshComponent", "Mesh")
+3. set_static_mesh_on_component("BP_RotatingCube", "Mesh", "/Engine/BasicShapes/Cube")
+4. set_blueprint_property("BP_RotatingCube", "RotationSpeed", 90.0)  ← sets CDO default
+5. compile_blueprint("BP_RotatingCube")
+6. spawn_blueprint_actor("BP_RotatingCube", "RotatingCube_1", {"x": 0, "y": 0, "z": 100})
+
+BLUEPRINT LOGIC LIMITATION (IMPORTANT):
+- You CANNOT wire Blueprint event graph nodes via tools or Python. The UE Python API does not expose K2Node graph editing.
+- "Create a Blueprint that rotates every tick" → you can create the Blueprint class, add the RotatingMovementComponent (which auto-rotates with no graph wiring needed!), and set its RotationRate via set_component_property.
+- "Create a Blueprint with custom BeginPlay logic" → create the Blueprint + variables via tools, then tell the user: "I've created the Blueprint structure. To add the BeginPlay logic, open it in the editor and wire the event graph — I'll give you the exact steps."
+- For simple behaviors, PREFER components over graph logic: RotatingMovementComponent, ProjectileMovementComponent, FloatingPawnMovement, InterpToMovementComponent all work without any graph wiring.
+- For physics-based behavior: use set_physics_properties (simulate_physics=true) which also requires no graph.`;
+
+
+const GUIDE_MODE_ADDENDUM = `
+
+GUIDE MODE ACTIVE:
+The user has switched you to "Guide" mode. You are a teacher, not an executor.
+- NEVER call any tools or execute any editor commands, even if MCP tools are available.
+- Instead, provide clear numbered steps the user can follow themselves.
+- Explain WHY each step is done so the user learns the process.
+- Be concise but educational.`;
+
+function buildToolCallingAddendum(engine: SelectedEngine): string {
+  if (!engine || engine === 'unreal') return TOOL_CALLING_ADDENDUM_UE5;
+
+  const cfg = ENGINE_CONFIGS[engine];
+  return `
+
+${cfg.name.toUpperCase()} REMOTE CONTROL — TOOL USE:
+You have MCP tools connected live to the user's ${cfg.name} editor. Use them to directly execute actions in the editor. Do NOT describe steps for the user to follow — call the tools yourself.
+
+WHEN TO USE TOOLS:
+- The user asks you to create, add, modify, move, delete, or change anything in their project → call tools immediately
+- The user asks what's in their scene/project → query with tools, then summarise the result
+
+WHEN NOT TO USE TOOLS (answer conversationally instead):
+- The user asks a knowledge/concept question (e.g. "what is X?", "how does Y work?", "why does Z happen?", "explain X", "what's the difference between…") → answer directly, no tools
+- The user asks a yes/no or advice question with no editor action required → answer directly
+
+TOOL CALLING RULES:
+- Call tools for actionable editor requests. Never reply with "here are the steps to do it manually".
+- Chain multiple tool calls as needed (e.g. query first, then modify).
+- After completing ALL actions, briefly confirm what was done.
+- If a tool fails, report the specific error to the user and try an alternative tool. NEVER fall back to giving manual step-by-step instructions — you execute, not the user.
+- Do NOT retry the same failing tool more than once. If it fails twice, move on.
+- NEVER stop mid-task to ask "should I continue?" or "shall I proceed?". Execute all steps autonomously until the task is fully complete, then give a single summary.
+- If a tool returns an error about the editor not being connected or plugin not enabled, retry the SAME tool call 1-2 more times before giving up. NEVER fall back to giving manual steps just because of a connection error.
+- Do NOT use editor__launch or try to open Godot — it is already open.
+- Prefer the most direct tool available. Use scene inspection tools (like scene.get_tree or equivalent) to discover the current state before making changes when relevant.
+${engine === 'godot' ? `
+GODOT PROPERTIES FORMAT (CRITICAL):
+The "properties" parameter in add_node and set_node_properties MUST be passed as a JSON STRING — not an object. Stringify it before passing.
+
+CORRECT usage for add_node with a box mesh at position (3,1,0):
+  nodeType: "MeshInstance3D"
+  nodeName: "Box"
+  properties: "{\"mesh\":{\"type\":\"BoxMesh\",\"properties\":{\"size\":{\"type\":\"Vector3\",\"x\":2,\"y\":1,\"z\":2}}},\"position\":{\"type\":\"Vector3\",\"x\":3,\"y\":1,\"z\":0}}"
+
+Resource type formats (always nested inside the stringified JSON):
+- BoxMesh:    {"type":"BoxMesh","properties":{"size":{"type":"Vector3","x":2,"y":1,"z":2}}}
+- PlaneMesh:  {"type":"PlaneMesh","properties":{"size":{"type":"Vector2","x":20,"y":20}}}
+- CylinderMesh: {"type":"CylinderMesh","properties":{"height":2,"top_radius":0.5,"bottom_radius":0.5}}
+- SphereMesh: {"type":"SphereMesh","properties":{"radius":0.5,"height":1}}
+- StandardMaterial3D: {"type":"StandardMaterial3D","properties":{"albedo_color":{"type":"Color","r":0.8,"g":0.2,"b":0.2,"a":1}}}
+
+Vector/position types (inside the stringified JSON):
+- Position: {"type":"Vector3","x":3,"y":1,"z":0}
+- Color: {"type":"Color","r":0.8,"g":0.2,"b":0.2,"a":1}
+
+RULES:
+- ALWAYS set mesh on MeshInstance3D — never create a MeshInstance3D without setting its mesh property
+- ALWAYS set position — never leave nodes at (0,0,0) unless intentional
+- ALWAYS stringify the full properties dict before passing it to the tool` : ''}
+${engine === 'unity' ? `
+UNITY-SPECIFIC RULES:
+- To create or edit a C# script: call the \`write_script\` tool with scriptName (no .cs extension), content (full C# source), and optionally folder (subfolder inside Assets, e.g. "Scripts"). This writes the file directly and triggers recompile.
+- Do NOT use execute_menu_item to create scripts — it creates an empty unnamed file. Always use write_script.
+- Do NOT tell the user to create scripts manually. You have write_script — use it.
+- After write_script, Unity recompiles. Do NOT immediately attach the script as a component. Say: "Script written ✓ — Unity is recompiling. Once the progress bar at the bottom disappears, tell me and I'll attach it."
+- "Component type 'X' not found" = Unity hasn't finished recompiling. Wait and tell the user.
+- To attach a script to a GameObject after compilation: use update_component with componentName set to the script class name.` : ''}`;
+}
+
+// Keep for backward compat
+const TOOL_CALLING_ADDENDUM = TOOL_CALLING_ADDENDUM_UE5;
 
 export class AIClientService {
   private openai: OpenAI | null = null;
@@ -91,6 +403,14 @@ export class AIClientService {
   private provider: AIProvider = 'openai';
   private apiKey: string = '';
   private modelOverride: string | null = null;
+  private toolsModel: string | null = null;
+  private selectedEngine: SelectedEngine = 'unreal';
+
+  // Proxy routing — used in production where no key is bundled in the ASAR.
+  private useProxy = false;
+  private proxyToken: string | null = null;
+  private proxyTokenExpiresAt = 0;
+  private proxyUserEmail = '';
 
   // Context limits
   private readonly MAX_LOG_LINES = 200;
@@ -101,12 +421,201 @@ export class AIClientService {
     this.modelOverride = model;
   }
 
-  // Prefer the key bundled at build time; fall back to the user's stored key
-  // so the app works in dev without a .env.local key.
+  setEngine(engine: SelectedEngine): void {
+    this.selectedEngine = engine ?? 'unreal';
+  }
+
+  setProxyCredentials(token: string, expiresAt: number, email: string): void {
+    this.proxyToken = token;
+    this.proxyTokenExpiresAt = expiresAt;
+    this.proxyUserEmail = email;
+  }
+
+  private getValidProxyToken(): string {
+    if (!this.proxyToken || Date.now() >= this.proxyTokenExpiresAt - 60_000) {
+      throw new Error('Proxy session expired. Please log in again.');
+    }
+    return this.proxyToken;
+  }
+
+  // Streams an OpenAI-compatible SSE response from the backend proxy.
+  // Yields ChatCompletionChunk objects — same shape as the OpenAI SDK stream —
+  // so all existing for-await loops work unchanged.
+  private async *streamFromProxy(
+    messages: OpenAI.ChatCompletionMessageParam[],
+    model: string,
+    tools?: OpenAI.ChatCompletionTool[],
+    maxTokens = 8192,
+  ): AsyncGenerator<OpenAI.Chat.Completions.ChatCompletionChunk> {
+    const token = this.getValidProxyToken();
+    const body: Record<string, unknown> = { model, messages, stream: true, max_tokens: maxTokens };
+    if (tools?.length) body.tools = tools;
+
+    const response = await fetch(PROXY_BASE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'X-User-Email': this.proxyUserEmail,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => response.statusText);
+      throw new Error(`AI proxy error ${response.status}: ${errText}`);
+    }
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') return;
+        try {
+          yield JSON.parse(data) as OpenAI.Chat.Completions.ChatCompletionChunk;
+        } catch {
+          // skip malformed chunk
+        }
+      }
+    }
+  }
+
+  // Non-streaming proxy call for summarization, engine detection, etc.
+  private async callProxyNonStreaming(
+    messages: OpenAI.ChatCompletionMessageParam[],
+    model: string,
+    maxTokens = 600,
+  ): Promise<string> {
+    const token = this.getValidProxyToken();
+    const response = await fetch(PROXY_BASE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'X-User-Email': this.proxyUserEmail,
+      },
+      body: JSON.stringify({ model, messages, stream: false, max_tokens: maxTokens }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => response.statusText);
+      throw new Error(`AI proxy error ${response.status}: ${errText}`);
+    }
+
+    const data = (await response.json()) as { choices: Array<{ message: { content: string } }> };
+    return data.choices[0]?.message?.content?.trim() ?? '';
+  }
+
+  async detectEngine(screenshot: CaptureResult | null): Promise<string> {
+    const systemPrompt = 'You are an expert at identifying software from screenshots. Look at the screenshot and identify which game engine or creative tool is shown. Respond with EXACTLY one of these words only: unreal, godot, unity, blender, roblox, unknown. No other text.';
+    const userPrompt = 'Which engine/tool is shown in this screenshot? Respond with exactly one word.';
+
+    if (this.openai || this.useProxy) {
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+      ];
+      if (screenshot?.imageBase64) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: userPrompt },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot.imageBase64}`, detail: 'low' } },
+          ],
+        });
+      } else {
+        messages.push({ role: 'user', content: userPrompt });
+      }
+      const model = this.modelOverride || this.toolsModel || PRIMARY_MODEL;
+      if (this.useProxy && !this.openai) {
+        return (await this.callProxyNonStreaming(messages, model, 10)).toLowerCase() || 'unknown';
+      }
+      const response = await this.openai!.chat.completions.create({ model, messages, max_tokens: 10 });
+      return response.choices[0]?.message?.content?.trim().toLowerCase() ?? 'unknown';
+    } else if (this.anthropic) {
+      const content: Anthropic.MessageCreateParams['content'] = [{ type: 'text', text: userPrompt }];
+      if (screenshot?.imageBase64) {
+        content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshot.imageBase64 } });
+      }
+      const response = await this.anthropic.messages.create({
+        model: ANTHROPIC_TOOLS_MODEL,
+        max_tokens: 10,
+        system: systemPrompt,
+        messages: [{ role: 'user', content }],
+      });
+      const textBlock = response.content.find(b => b.type === 'text');
+      return textBlock?.type === 'text' ? textBlock.text.trim().toLowerCase() : 'unknown';
+    }
+    return 'unknown';
+  }
+
+  // Configure the AI client. Priority order:
+  //   1. User's own stored API key → direct OpenRouter call (power-user escape hatch)
+  //   2. Bundled dev key (only present in dev builds, empty in production) → direct
+  //   3. No key → route through backend proxy (production default)
   configure(provider: AIProvider, userApiKey: string): void {
+    // When Anthropic backend is active, use the bundled Anthropic key.
+    if (ACTIVE_AI_BACKEND === 'anthropic' && BUNDLED_ANTHROPIC_KEY) {
+      this.provider = 'anthropic';
+      this.anthropic = new Anthropic({ apiKey: BUNDLED_ANTHROPIC_KEY });
+      this.openai = null;
+      this.useProxy = false;
+      return;
+    }
+
+    // When Gemini backend is active, use Gemini's OpenAI-compatible API for
+    // regular chat. Also init Anthropic (if key available) for tool-calling.
+    if (ACTIVE_AI_BACKEND === 'gemini' && BUNDLED_GEMINI_KEY) {
+      this.provider = 'openai'; // reuse all OpenAI code paths
+      this.openai = new OpenAI({
+        apiKey: BUNDLED_GEMINI_KEY,
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      });
+      this.anthropic = BUNDLED_ANTHROPIC_KEY ? new Anthropic({ apiKey: BUNDLED_ANTHROPIC_KEY }) : null;
+      this.useProxy = false;
+      return;
+    }
+
+    // When OpenRouter backend is active:
+    //   - User's own key → call OpenRouter directly (preserves dev workflow)
+    //   - Bundled dev key → call OpenRouter directly (local dev without proxy)
+    //   - No key (production) → route through backend proxy; no key in bundle
+    if (ACTIVE_AI_BACKEND === 'openrouter') {
+      this.provider = 'openai';
+      this.toolsModel = OPENROUTER_TOOLS_MODEL;
+      this.anthropic = null;
+
+      // Dev builds only: if a key is bundled via .env.local, call OpenRouter directly.
+      // Production builds have no bundled key → always use backend proxy.
+      if (BUNDLED_OPENROUTER_KEY) {
+        this.useProxy = false;
+        this.openai = new OpenAI({
+          apiKey: BUNDLED_OPENROUTER_KEY,
+          baseURL: 'https://openrouter.ai/api/v1',
+          defaultHeaders: {
+            'HTTP-Referer': 'https://build-buddy.app',
+            'X-Title': 'Build Buddy',
+          },
+        });
+      } else {
+        this.useProxy = true;
+        this.openai = null;
+      }
+      return;
+    }
+
     const apiKey = BUNDLED_OPENAI_KEY || userApiKey;
     this.provider = BUNDLED_OPENAI_KEY ? 'openai' : provider;
     this.apiKey = apiKey;
+    this.useProxy = false;
     if (this.provider === 'openai' && apiKey) {
       this.openai = new OpenAI({ apiKey });
       this.anthropic = null;
@@ -117,7 +626,7 @@ export class AIClientService {
   }
 
   async *ask(request: AIRequest): AsyncGenerator<string, AIResponse> {
-    const { prompt, context, screenshot, mode, conversationHistory, projectContext } = request;
+    const { prompt, context, screenshot, mode, agentMode, conversationHistory, memorySummary, projectContext } = request;
 
     // Prepare context
     const contextText = this.prepareContext(context);
@@ -125,15 +634,16 @@ export class AIClientService {
     // Build messages
     const userContent = this.buildUserContent(prompt, contextText, screenshot, mode, projectContext);
 
-    if (this.provider === 'openai' && this.openai) {
-      yield* this.askOpenAI(userContent, screenshot, conversationHistory);
+    const systemAddendum = agentMode === 'guide' ? GUIDE_MODE_ADDENDUM : undefined;
+
+    if (this.provider === 'openai' && (this.openai || this.useProxy)) {
+      yield* this.askOpenAI(userContent, screenshot, conversationHistory, memorySummary, systemAddendum);
     } else if (this.provider === 'anthropic' && this.anthropic) {
-      yield* this.askAnthropic(userContent, screenshot, conversationHistory);
+      yield* this.askAnthropic(userContent, screenshot, conversationHistory, memorySummary, systemAddendum);
     } else {
       throw new Error('AI service is not available. Please try again later or contact support.');
     }
 
-    // Return final response (the generator will have yielded all chunks)
     return {
       id: Date.now().toString(),
       diagnosis: [],
@@ -143,20 +653,342 @@ export class AIClientService {
     };
   }
 
-  private async *askOpenAI(
+  // ===== Tool-Calling Flow (MCP connected) =====
+
+  private static readonly MAX_TOOL_ROUNDS = 60;
+
+  async *askWithTools(
+    request: AIRequest,
+    mcpTools: MCPToolDefinition[],
+    executeTool: (name: string, args: Record<string, unknown>) => Promise<MCPToolResult>,
+  ): AsyncGenerator<string, AIResponse> {
+    const { prompt, context, screenshot, mode, conversationHistory, memorySummary, projectContext, editorSnapshot } = request;
+    const contextText = this.prepareContext(context);
+    const userContent = this.buildUserContent(prompt, contextText, screenshot, mode, projectContext, editorSnapshot);
+
+    if (this.anthropic) {
+      // Always prefer Anthropic Sonnet for tool-calling (remote control),
+      // even when the regular chat backend is Gemini.
+      yield* this.askWithToolsAnthropic(userContent, screenshot, conversationHistory, memorySummary, mcpTools, executeTool);
+    } else if (this.provider === 'openai' && (this.openai || this.useProxy)) {
+      yield* this.askWithToolsOpenAI(userContent, screenshot, conversationHistory, memorySummary, mcpTools, executeTool);
+    } else if (this.provider === 'anthropic' && this.anthropic) {
+      yield* this.askWithToolsAnthropic(userContent, screenshot, conversationHistory, memorySummary, mcpTools, executeTool);
+    } else {
+      throw new Error('AI service is not available. Please try again later or contact support.');
+    }
+
+    return {
+      id: Date.now().toString(),
+      diagnosis: [],
+      fixSteps: [],
+      nextDebugSteps: [],
+      raw: '',
+    };
+  }
+
+  private convertToolsForOpenAI(mcpTools: MCPToolDefinition[]): OpenAI.ChatCompletionTool[] {
+    return mcpTools.map(t => {
+      const schema = t.inputSchema as Record<string, unknown> | null | undefined;
+      // Ensure parameters is always a valid JSON Schema object — some MCP servers
+      // (e.g. gopeak) return schemas without a top-level "type" field which causes
+      // OpenRouter/model rejections ("JSON error injected into SSE stream").
+      const parameters: Record<string, unknown> = {
+        type: 'object',
+        properties: (schema?.properties as Record<string, unknown>) ?? {},
+        ...(Array.isArray(schema?.required) ? { required: schema!.required } : {}),
+      };
+      return {
+        type: 'function' as const,
+        function: {
+          name: t.name,
+          description: (t.description || '').slice(0, 1024), // cap description length
+          parameters,
+        },
+      };
+    });
+  }
+
+  private buildNameMap(tools: MCPToolDefinition[]): { sanitized: MCPToolDefinition[]; nameMap: Map<string, string> } {
+    const nameMap = new Map<string, string>();
+    const sanitized = tools.map(t => {
+      const safe = t.name.replace(/\./g, '__').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+      nameMap.set(safe, t.name);
+      return { ...t, name: safe };
+    });
+    return { sanitized, nameMap };
+  }
+
+  private convertToolsForAnthropic(mcpTools: MCPToolDefinition[]): Anthropic.Tool[] {
+    return mcpTools.map(t => ({
+      name: t.name,
+      description: t.description || '',
+      input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
+    }));
+  }
+
+  private async *askWithToolsOpenAI(
     userContent: string,
     screenshot: AIRequest['screenshot'],
-    conversationHistory?: AIRequest['conversationHistory']
+    conversationHistory: AIRequest['conversationHistory'],
+    memorySummary: string | undefined,
+    mcpTools: MCPToolDefinition[],
+    executeTool: (name: string, args: Record<string, unknown>) => Promise<MCPToolResult>,
   ): AsyncGenerator<string> {
-    if (!this.openai) {
-      throw new Error('OpenAI client not initialized');
+    if (!this.openai && !this.useProxy) throw new Error('OpenAI client not initialized');
+
+    let systemContent = buildSystemPrompt(this.selectedEngine) + buildToolCallingAddendum(this.selectedEngine);
+    if (memorySummary) {
+      systemContent += `\n\n[CONVERSATION RECAP — earlier messages summarized]\n${memorySummary}`;
     }
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemContent },
     ];
 
-    // Add conversation history first (previous messages)
+    if (conversationHistory?.length) {
+      for (const msg of conversationHistory) {
+        messages.push({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.content });
+      }
+    }
+
+    const activeToolsModel = this.modelOverride || this.toolsModel || PRIMARY_MODEL;
+    const supportsVision = !TEXT_ONLY_MODELS.has(activeToolsModel);
+
+    if (screenshot?.imageBase64 && supportsVision) {
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: userContent },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot.imageBase64}`, detail: 'auto' } },
+        ],
+      });
+    } else {
+      messages.push({ role: 'user', content: userContent });
+    }
+
+    const { sanitized: sanitizedMcpTools, nameMap } = this.buildNameMap(mcpTools);
+    const tools = this.convertToolsForOpenAI(sanitizedMcpTools);
+
+    for (let round = 0; round < AIClientService.MAX_TOOL_ROUNDS; round++) {
+      const roundModel = this.modelOverride || this.toolsModel || PRIMARY_MODEL;
+      const roundTools = round < AIClientService.MAX_TOOL_ROUNDS - 1 ? tools : undefined;
+      const stream = this.useProxy && !this.openai
+        ? this.streamFromProxy(messages, roundModel, roundTools, 8192)
+        : await this.openai!.chat.completions.create({
+            model: roundModel,
+            messages,
+            tools: roundTools,
+            stream: true,
+            max_tokens: 8192,
+          });
+
+      let accumulatedContent = '';
+      const toolCalls = new Map<number, { id: string; name: string; args: string }>();
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
+
+        if (delta?.content) {
+          accumulatedContent += delta.content;
+          yield delta.content;
+        }
+
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index;
+            if (!toolCalls.has(idx)) {
+              toolCalls.set(idx, { id: '', name: '', args: '' });
+            }
+            const entry = toolCalls.get(idx)!;
+            if (tc.id) entry.id = tc.id;
+            if (tc.function?.name) entry.name = tc.function.name;
+            if (tc.function?.arguments) entry.args += tc.function.arguments;
+          }
+        }
+      }
+
+      if (toolCalls.size === 0) break;
+
+      // AI wants to call tools — add the assistant message and execute
+      const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
+        role: 'assistant',
+        content: accumulatedContent || null,
+        tool_calls: Array.from(toolCalls.values()).map(tc => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: { name: tc.name, arguments: tc.args },
+        })),
+      };
+      messages.push(assistantMsg);
+
+      for (const tc of toolCalls.values()) {
+        console.log(`[AIClient] Tool call: ${tc.name}`);
+        yield `\n**⚡ ${tc.name}** — executing in ${ENGINE_CONFIGS[this.selectedEngine ?? 'unreal']?.name ?? 'editor'}...\n`;
+
+        let args: Record<string, unknown>;
+        try {
+          args = JSON.parse(tc.args);
+        } catch {
+          const errMsg = `Failed to parse tool arguments: ${tc.args.slice(0, 100)}`;
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: errMsg });
+          yield `**✗** Parse error\n`;
+          continue;
+        }
+
+        const result = await executeTool(nameMap.get(tc.name) ?? tc.name, args);
+        const resultText = result.success
+          ? JSON.stringify(result.data ?? { success: true })
+          : JSON.stringify({ error: result.error });
+
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: resultText });
+        yield result.success ? `**✓** Done\n` : `**✗** Error: ${result.error}\n`;
+      }
+    }
+  }
+
+  private async *askWithToolsAnthropic(
+    userContent: string,
+    screenshot: AIRequest['screenshot'],
+    conversationHistory: AIRequest['conversationHistory'],
+    memorySummary: string | undefined,
+    mcpTools: MCPToolDefinition[],
+    executeTool: (name: string, args: Record<string, unknown>) => Promise<MCPToolResult>,
+  ): AsyncGenerator<string> {
+    if (!this.anthropic) throw new Error('Anthropic client not initialized');
+
+    let systemContent = buildSystemPrompt(this.selectedEngine) + buildToolCallingAddendum(this.selectedEngine);
+    if (memorySummary) {
+      systemContent += `\n\n[CONVERSATION RECAP — earlier messages summarized]\n${memorySummary}`;
+    }
+
+    const messages: Anthropic.MessageParam[] = [];
+
+    if (conversationHistory?.length) {
+      for (const msg of conversationHistory) {
+        messages.push({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.content });
+      }
+    }
+
+    const userBlock: Anthropic.MessageCreateParams['content'] = [
+      { type: 'text', text: userContent },
+    ];
+    if (screenshot?.imageBase64) {
+      userBlock.push({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: screenshot.imageBase64 },
+      });
+    }
+    messages.push({ role: 'user', content: userBlock });
+
+    const { sanitized: sanitizedMcpTools, nameMap } = this.buildNameMap(mcpTools);
+    const tools = this.convertToolsForAnthropic(sanitizedMcpTools);
+
+    for (let round = 0; round < AIClientService.MAX_TOOL_ROUNDS; round++) {
+      const stream = await this.anthropic.messages.create({
+        model: this.modelOverride || ANTHROPIC_TOOLS_MODEL,
+        max_tokens: 8192,
+        system: systemContent,
+        messages,
+        tools: round < AIClientService.MAX_TOOL_ROUNDS - 1 ? tools : undefined,
+        stream: true,
+      });
+
+      let accumulatedText = '';
+      const toolUseBlocks: { id: string; name: string; input: string }[] = [];
+      let currentTool: { id: string; name: string; input: string } | null = null;
+      let stopReason = '';
+
+      for await (const event of stream) {
+        if (event.type === 'content_block_start') {
+          const block = (event as { content_block: { type: string; id?: string; name?: string } }).content_block;
+          if (block.type === 'tool_use') {
+            currentTool = { id: block.id || '', name: block.name || '', input: '' };
+          }
+        }
+
+        if (event.type === 'content_block_delta') {
+          const delta = event.delta as { type: string; text?: string; partial_json?: string };
+          if (delta.type === 'text_delta' && delta.text) {
+            accumulatedText += delta.text;
+            yield delta.text;
+          }
+          if (delta.type === 'input_json_delta' && delta.partial_json && currentTool) {
+            currentTool.input += delta.partial_json;
+          }
+        }
+
+        if (event.type === 'content_block_stop' && currentTool) {
+          toolUseBlocks.push(currentTool);
+          currentTool = null;
+        }
+
+        if (event.type === 'message_delta') {
+          const md = event as { delta?: { stop_reason?: string } };
+          stopReason = md.delta?.stop_reason || stopReason;
+        }
+      }
+
+      if (toolUseBlocks.length === 0) break;
+
+      // Build assistant content blocks for the conversation
+      const assistantContent: Anthropic.ContentBlockParam[] = [];
+      if (accumulatedText) {
+        assistantContent.push({ type: 'text', text: accumulatedText });
+      }
+      for (const tb of toolUseBlocks) {
+        let parsedInput: Record<string, unknown> = {};
+        try { parsedInput = JSON.parse(tb.input); } catch { /* empty */ }
+        assistantContent.push({ type: 'tool_use', id: tb.id, name: tb.name, input: parsedInput });
+      }
+      messages.push({ role: 'assistant', content: assistantContent });
+
+      // Execute tools and build results
+      const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
+      for (const tb of toolUseBlocks) {
+        console.log(`[AIClient] Tool call: ${tb.name}`);
+        yield `\n**⚡ ${tb.name}** — executing in ${ENGINE_CONFIGS[this.selectedEngine ?? 'unreal']?.name ?? 'editor'}...\n`;
+
+        let args: Record<string, unknown>;
+        try { args = JSON.parse(tb.input); } catch { args = {}; }
+
+        const result = await executeTool(nameMap.get(tb.name) ?? tb.name, args);
+        const resultText = result.success
+          ? JSON.stringify(result.data ?? { success: true })
+          : JSON.stringify({ error: result.error });
+
+        toolResultBlocks.push({ type: 'tool_result', tool_use_id: tb.id, content: resultText });
+        yield result.success ? `**✓** Done\n` : `**✗** Error: ${result.error}\n`;
+      }
+      messages.push({ role: 'user', content: toolResultBlocks });
+    }
+  }
+
+  private async *askOpenAI(
+    userContent: string,
+    screenshot: AIRequest['screenshot'],
+    conversationHistory?: AIRequest['conversationHistory'],
+    memorySummary?: string,
+    systemAddendum?: string,
+  ): AsyncGenerator<string> {
+    if (!this.openai && !this.useProxy) {
+      throw new Error('OpenAI client not initialized');
+    }
+
+    // Build system prompt, injecting recap and optional addendum if present
+    let systemContent = buildSystemPrompt(this.selectedEngine);
+    if (memorySummary) {
+      systemContent += `\n\n[CONVERSATION RECAP — earlier messages summarized]\n${memorySummary}`;
+    }
+    if (systemAddendum) {
+      systemContent += systemAddendum;
+    }
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: 'system', content: systemContent },
+    ];
+
+    // Add conversation history (last N messages, already windowed by caller)
     if (conversationHistory && conversationHistory.length > 0) {
       console.log('Including conversation history:', conversationHistory.length, 'messages');
       for (const msg of conversationHistory) {
@@ -187,12 +1019,10 @@ export class AIClientService {
       messages.push({ role: 'user', content: userContent });
     }
 
-    const stream = await this.openai.chat.completions.create({
-      model: this.modelOverride || 'gpt-4o',
-      messages,
-      stream: true,
-      max_tokens: 2000,
-    });
+    const model = this.modelOverride || PRIMARY_MODEL;
+    const stream = this.useProxy && !this.openai
+      ? this.streamFromProxy(messages, model, undefined, 8192)
+      : await this.openai!.chat.completions.create({ model, messages, stream: true, max_tokens: 8192 });
 
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content;
@@ -205,16 +1035,27 @@ export class AIClientService {
   private async *askAnthropic(
     userContent: string,
     screenshot: AIRequest['screenshot'],
-    conversationHistory?: AIRequest['conversationHistory']
+    conversationHistory?: AIRequest['conversationHistory'],
+    memorySummary?: string,
+    systemAddendum?: string,
   ): AsyncGenerator<string> {
     if (!this.anthropic) {
       throw new Error('Anthropic client not initialized');
     }
 
+    // Build system prompt, injecting recap and optional addendum if present
+    let systemContent = buildSystemPrompt(this.selectedEngine);
+    if (memorySummary) {
+      systemContent += `\n\n[CONVERSATION RECAP — earlier messages summarized]\n${memorySummary}`;
+    }
+    if (systemAddendum) {
+      systemContent += systemAddendum;
+    }
+
     // Build messages array with conversation history
     const messages: Anthropic.MessageParam[] = [];
 
-    // Add conversation history first (previous messages)
+    // Add conversation history (last N messages, already windowed by caller)
     if (conversationHistory && conversationHistory.length > 0) {
       console.log('Including conversation history:', conversationHistory.length, 'messages');
       for (const msg of conversationHistory) {
@@ -247,9 +1088,9 @@ export class AIClientService {
     messages.push({ role: 'user', content });
 
     const stream = await this.anthropic.messages.create({
-      model: this.modelOverride || 'claude-3-opus-20240229',
-      max_tokens: 2000,
-      system: SYSTEM_PROMPT,
+      model: this.modelOverride || PRIMARY_MODEL,
+      max_tokens: 8192,
+      system: systemContent,
       messages,
       stream: true,
     });
@@ -336,7 +1177,8 @@ export class AIClientService {
     contextText: string,
     screenshot: AIRequest['screenshot'],
     mode: AIRequest['mode'],
-    projectContext?: string
+    projectContext?: string,
+    editorSnapshot?: string,
   ): string {
     const parts: string[] = [];
 
@@ -354,6 +1196,13 @@ export class AIClientService {
     // Add project context (static analysis, injected before runtime context)
     if (projectContext) {
       parts.push(projectContext);
+      parts.push('');
+    }
+
+    // Add live editor state (camera, selection) fetched via MCP
+    if (editorSnapshot) {
+      parts.push('=== LIVE EDITOR STATE ===');
+      parts.push(editorSnapshot);
       parts.push('');
     }
 
@@ -378,384 +1227,271 @@ export class AIClientService {
     return Math.ceil(text.length / 4);
   }
 
-  // ===== UE Python Script Generation =====
+  // ===== Conversation Summarization =====
 
-  async requestUEPythonScript(
-    conversationHistory: { role: string; content: string }[],
-    userIntent: string,
-    projectInfo?: string,
-    cameraInfo?: { x: number; y: number; z: number; pitch: number; yaw: number; roll: number }
+  async summarizeConversation(
+    messages: Array<{ role: string; content: string }>,
+    existingSummary?: string
   ): Promise<string> {
-    // Build camera context section if available
-    let cameraContext = '';
-    if (cameraInfo) {
-      // Compute approximate forward vector from yaw (pitch ignored for ground-plane placement)
-      const yawRad = (cameraInfo.yaw * Math.PI) / 180;
-      const fwdX = Math.cos(yawRad);
-      const fwdY = Math.sin(yawRad);
-      cameraContext = `
-VIEWPORT CAMERA (use this for spatial requests like "in front of me", "here", "where I'm looking"):
-  Camera position: x=${cameraInfo.x.toFixed(1)}, y=${cameraInfo.y.toFixed(1)}, z=${cameraInfo.z.toFixed(1)}
-  Camera rotation: pitch=${cameraInfo.pitch.toFixed(1)}, yaw=${cameraInfo.yaw.toFixed(1)}, roll=${cameraInfo.roll.toFixed(1)}
-  Forward direction (ground plane): x=${fwdX.toFixed(3)}, y=${fwdY.toFixed(3)}
+    const summarySystemPrompt = `You are a conversation summarizer. Condense the following conversation into a concise recap (max 500 tokens). Preserve:
+- Key facts and technical details discussed
+- Decisions made and solutions provided
+- Code snippets or commands mentioned
+- User preferences and project context
+${existingSummary ? '\nAn existing summary of earlier messages is provided — merge and extend it, do not repeat.' : ''}
+Output ONLY the summary text, no headers or formatting.`;
 
-  To spawn 300 units in front of camera (on the ground plane):
-    spawn_x = ${cameraInfo.x.toFixed(1)} + (${fwdX.toFixed(3)} * 300)
-    spawn_y = ${cameraInfo.y.toFixed(1)} + (${fwdY.toFixed(3)} * 300)
-    spawn_z = ${cameraInfo.z.toFixed(1)}  # same height as camera; adjust to 0 if ground-level makes more sense
-    spawn_loc = unreal.Vector(spawn_x, spawn_y, spawn_z)
+    const conversationText = messages
+      .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+      .join('\n\n');
 
-  When the user says "in front of me", "here", "at my location", or similar — use spawn_loc above.
-  When the user gives no location hint, use spawn_loc (camera-relative) rather than world origin.`;
-    } else {
-      cameraContext = `
-SPAWNING LOCATION: Camera info unavailable. Spawn at Vector(0, 0, 100) as safe default.`;
-    }
+    const userPrompt = existingSummary
+      ? `EXISTING SUMMARY:\n${existingSummary}\n\nNEW MESSAGES TO INCORPORATE:\n${conversationText}`
+      : conversationText;
 
-    const systemPrompt = `You are a Python code generator for Unreal Engine 5.
-The user wants you to execute something inside Unreal Editor using Python Remote Execution.
-The script runs directly on the game thread — do NOT use any threading or callback APIs.
-
-RULES:
-- Output ONLY valid Python code — no explanations, no markdown fences, no comments unless critical
-- Always start with: import unreal
-- Use unreal.log() or print() for status output
-- Use the unreal Python API (unreal module) — assume UE5.x
-- Keep the script focused, safe, and minimal
-- NEVER use EditorLevelLibrary — it is deprecated and missing many functions in UE5
-- NEVER invent API calls — if unsure, use a simpler known-good approach
-- If the request cannot be done via Python API, print a clear explanation instead of failing silently
-
-CORRECT UE5 PATTERNS (use these exactly):
-
-Spawn a static mesh actor (e.g. cube):
-  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-  actor = subsystem.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(0, 0, 100), unreal.Rotator(0, 0, 0))
-  mesh = unreal.load_asset('/Engine/BasicShapes/Cube')
-  actor.static_mesh_component.set_static_mesh(mesh)
-
-Get selected actors (ALWAYS try selection first, then fall back to find-by-class):
-  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-  actors = subsystem.get_selected_level_actors()
-  # If nothing selected, find by type:
-  if not actors:
-      all_actors = subsystem.get_all_level_actors()
-      actors = [a for a in all_actors if isinstance(a, unreal.StaticMeshActor)]
-
-Find all actors of a specific class in the level:
-  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-  all_actors = subsystem.get_all_level_actors()
-  # Filter by class — use isinstance:
-  static_meshes = [a for a in all_actors if isinstance(a, unreal.StaticMeshActor)]
-  dir_lights   = [a for a in all_actors if isinstance(a, unreal.DirectionalLight)]
-  point_lights = [a for a in all_actors if isinstance(a, unreal.PointLight)]
-  spot_lights  = [a for a in all_actors if isinstance(a, unreal.SpotLight)]
-  sky_lights   = [a for a in all_actors if isinstance(a, unreal.SkyLight)]
-
-Find actor by name/label:
-  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-  all_actors = subsystem.get_all_level_actors()
-  actor = next((a for a in all_actors if a.get_actor_label().lower() == 'myname'), None)
-
-LIGHTING — always search the level for existing lights first, never assume selection:
-
-  Change directional light (sun) intensity / colour:
-    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    all_actors = subsystem.get_all_level_actors()
-    dir_lights = [a for a in all_actors if isinstance(a, unreal.DirectionalLight)]
-    if dir_lights:
-        light = dir_lights[0]
-        light.light_component.set_intensity(10.0)          # lux; typical daylight = 10
-        light.light_component.set_light_color(unreal.LinearColor(1.0, 0.95, 0.8, 1.0))
-        light.set_actor_rotation(unreal.Rotator(-45, 0, 0))  # pitch controls sun angle
-    else:
-        print('No DirectionalLight found in level')
-
-  Change sky light intensity:
-    sky_lights = [a for a in all_actors if isinstance(a, unreal.SkyLight)]
-    if sky_lights:
-        sky_lights[0].sky_light_component.set_intensity(1.0)
-
-  Change point light intensity / colour:
-    point_lights = [a for a in all_actors if isinstance(a, unreal.PointLight)]
-    for l in point_lights:
-        l.point_light_component.set_intensity(1500.0)
-        l.point_light_component.set_light_color(unreal.LinearColor(1.0, 0.8, 0.6, 1.0))
-        l.point_light_component.set_attenuation_radius(500.0)
-
-  Spawn a new point light:
-    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    light = subsystem.spawn_actor_from_class(unreal.PointLight, unreal.Vector(0, 0, 300), unreal.Rotator(0, 0, 0))
-    light.point_light_component.set_intensity(1500.0)
-    light.point_light_component.set_light_color(unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
-    light.point_light_component.set_attenuation_radius(500.0)
-
-  Spawn a spot light:
-    light = subsystem.spawn_actor_from_class(unreal.SpotLight, unreal.Vector(0, 0, 400), unreal.Rotator(-90, 0, 0))
-    light.spot_light_component.set_intensity(2000.0)
-    light.spot_light_component.set_outer_cone_angle(45.0)
-
-  Spawn a directional light (sun):
-    light = subsystem.spawn_actor_from_class(unreal.DirectionalLight, unreal.Vector(0, 0, 300), unreal.Rotator(-45, 0, 0))
-    light.light_component.set_intensity(10.0)
-
-CONTENT BROWSER — folders and assets:
-
-  Create a folder (ALWAYS scan after creation so it appears in Content Browser immediately):
-    unreal.EditorAssetLibrary.make_directory('/Game/MyFolder')
-    unreal.AssetRegistryHelpers.get_asset_registry().scan_paths_synchronous(['/Game/MyFolder'], True)
-    print('Folder created: /Game/MyFolder')
-
-  List assets in a folder:
-    ar = unreal.AssetRegistryHelpers.get_asset_registry()
-    assets = ar.get_assets_by_path('/Game/MyFolder', recursive=True)
-    for a in assets:
-        print(str(a.asset_name))
-
-  Duplicate an asset:
-    unreal.EditorAssetLibrary.duplicate_asset('/Game/Source/MyAsset', '/Game/Dest/MyAssetCopy')
-
-  Delete an asset:
-    unreal.EditorAssetLibrary.delete_asset('/Game/MyFolder/MyAsset')
-
-Move / rotate / scale an actor:
-  actor.set_actor_location(unreal.Vector(x, y, z))
-  actor.set_actor_rotation(unreal.Rotator(pitch, yaw, roll))
-  actor.set_actor_scale3d(unreal.Vector(x, y, z))
-
-Load asset:
-  unreal.load_asset('/Game/path/to/asset')
-  unreal.load_asset('/Engine/BasicShapes/Cube')
-  unreal.load_asset('/Engine/BasicShapes/Sphere')
-  unreal.load_asset('/Engine/BasicShapes/Cylinder')
-  unreal.load_asset('/Engine/BasicShapes/Cone')
-  unreal.load_asset('/Engine/BasicShapes/Plane')
-
-Get asset registry:
-  ar = unreal.AssetRegistryHelpers.get_asset_registry()
-
-Save all:
-  unreal.EditorLoadingAndSavingUtils.save_dirty_packages(True, True)
-
-Run console command:
-  unreal.SystemLibrary.execute_console_command(None, 'stat fps')
-
-Delete an actor:
-  subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-  subsystem.destroy_actor(actor)
-
-Set material on actor — NEVER use actor.static_mesh_component directly (breaks on Blueprint actors).
-ALWAYS use get_component_by_class which works on ANY actor type:
-  mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
-  if mesh_comp:
-      mat = unreal.load_asset('/Game/path/to/material')
-      mesh_comp.set_material(0, mat)
-
-Set material on selected actors (full safe pattern):
-  import unreal, json
-  try:
-      subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-      actors = subsystem.get_selected_level_actors()
-      if not actors:
-          print(json.dumps({'success': False, 'error': 'No actors selected'}))
-      else:
-          mat = unreal.load_asset('/Game/path/to/material')
-          changed = 0
-          for actor in actors:
-              mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
-              if mesh_comp and mat:
-                  mesh_comp.set_material(0, mat)
-                  changed += 1
-          print(json.dumps({'success': True, 'changed': changed}))
-  except Exception as e:
-      print(json.dumps({'success': False, 'error': str(e)}))
-
-Find a material by name and apply it to selected actors (when user doesn't know exact path):
-  import unreal, json
-  try:
-      subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-      actors = subsystem.get_selected_level_actors()
-      ar = unreal.AssetRegistryHelpers.get_asset_registry()
-      all_assets = ar.get_all_assets()
-      term = 'rock'.lower()
-      mats = [a for a in all_assets if 'material' in str(a.asset_class).lower() and term in str(a.asset_name).lower()]
-      if not mats:
-          print(json.dumps({'success': False, 'error': f'No material matching "{term}" found'}))
-      else:
-          mat = unreal.load_asset(str(mats[0].object_path))
-          for actor in actors:
-              mesh_comp = actor.get_component_by_class(unreal.StaticMeshComponent)
-              if mesh_comp:
-                  mesh_comp.set_material(0, mat)
-          print(json.dumps({'success': True, 'material': str(mats[0].asset_name)}))
-  except Exception as e:
-      print(json.dumps({'success': False, 'error': str(e)}))
-
-SELECTION & VIEWPORT:
-
-  Select actors by name or class (makes them visible in UE outliner):
-    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    all_actors = subsystem.get_all_level_actors()
-    targets = [a for a in all_actors if a.get_actor_label().lower() == 'cube_01']
-    subsystem.set_selected_level_actors(targets)
-
-  Deselect all:
-    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    subsystem.set_selected_level_actors([])
-
-  Focus viewport on selected actor:
-    unreal.SystemLibrary.execute_console_command(None, 'actor focus')
-
-ACTOR OPERATIONS:
-
-  Rename an actor (change its label in the Outliner):
-    actor.set_actor_label('NewName')
-
-  Hide / show an actor in the editor viewport:
-    actor.set_is_temporarily_hidden_in_editor(True)   # hide
-    actor.set_is_temporarily_hidden_in_editor(False)  # show
-
-  Duplicate selected actors:
-    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    duplicates = subsystem.duplicate_selected_actors(unreal.Vector(100, 0, 0))  # offset
-
-  Attach actor B to actor A (parent/child):
-    actor_b.attach_to_actor(actor_a, '', unreal.AttachmentRule.KEEP_WORLD, unreal.AttachmentRule.KEEP_WORLD, unreal.AttachmentRule.KEEP_WORLD, False)
-
-  Detach actor from parent:
-    actor.detach_from_actor(unreal.DetachmentRule.KEEP_WORLD, unreal.DetachmentRule.KEEP_WORLD, unreal.DetachmentRule.KEEP_WORLD)
-
-  Set actor mobility (must be done via set_editor_property):
-    actor.root_component.set_editor_property('mobility', unreal.ComponentMobility.MOVABLE)
-    # Options: STATIC, STATIONARY, MOVABLE
-
-  Enable/disable physics on a static mesh actor:
-    actor.static_mesh_component.set_simulate_physics(True)
-    actor.static_mesh_component.set_editor_property('collision_enabled', unreal.CollisionEnabled.QUERY_AND_PHYSICS)
-
-  Generic property setter (use when no dedicated setter exists):
-    actor.set_editor_property('hidden', True)
-    actor.set_editor_property('tags', ['mytag'])
-    component.set_editor_property('cast_shadow', False)
-
-BLUEPRINT:
-
-  Create a new Blueprint asset (does NOT edit the graph — only creates the asset):
-    import unreal
-    factory = unreal.BlueprintFactory()
-    factory.set_editor_property('parent_class', unreal.Actor)
-    asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
-    bp = asset_tools.create_asset('MyBlueprint', '/Game/Blueprints', unreal.Blueprint, factory)
-    unreal.EditorAssetLibrary.save_asset(bp.get_path_name())
-    print('Blueprint created: ' + bp.get_path_name())
-
-  Open an asset (Blueprint, Material, etc.) in its editor:
-    unreal.AssetEditorSubsystem().open_editor_for_assets([unreal.load_asset('/Game/Blueprints/MyBlueprint')])
-
-  Compile all Blueprints:
-    unreal.SystemLibrary.execute_console_command(None, 'blueprints compileall')
-
-WORLD ENVIRONMENT:
-
-  Exponential height fog — find or spawn:
-    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    all_actors = subsystem.get_all_level_actors()
-    fogs = [a for a in all_actors if isinstance(a, unreal.ExponentialHeightFog)]
-    if fogs:
-        fog_comp = fogs[0].get_component_by_class(unreal.ExponentialHeightFogComponent)
-        fog_comp.set_editor_property('fog_density', 0.02)
-        fog_comp.set_editor_property('fog_inscattering_color', unreal.LinearColor(0.5, 0.6, 0.7, 1.0))
-    else:
-        fog = subsystem.spawn_actor_from_class(unreal.ExponentialHeightFog, unreal.Vector(0,0,0), unreal.Rotator(0,0,0))
-
-  Sky atmosphere — find and adjust:
-    sky_atm = [a for a in all_actors if isinstance(a, unreal.SkyAtmosphere)]
-    if sky_atm:
-        comp = sky_atm[0].get_component_by_class(unreal.SkyAtmosphereComponent)
-        comp.set_editor_property('rayleigh_scattering_scale', 0.0331)
-
-  Post Process Volume — find and adjust (bloom, exposure, colour grading):
-    ppvs = [a for a in all_actors if isinstance(a, unreal.PostProcessVolume)]
-    if ppvs:
-        ppv = ppvs[0]
-        settings = ppv.settings
-        settings.set_editor_property('bloom_intensity', 1.5)
-        settings.set_editor_property('auto_exposure_bias', 1.0)
-        settings.set_editor_property('vignette_intensity', 0.4)
-        ppv.settings = settings
-    else:
-        ppv = subsystem.spawn_actor_from_class(unreal.PostProcessVolume, unreal.Vector(0,0,0), unreal.Rotator(0,0,0))
-        ppv.set_editor_property('infinite_extent', True)
-
-ADDITIONAL LIGHT TYPES:
-
-  Rect light (area light):
-    subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    light = subsystem.spawn_actor_from_class(unreal.RectLight, unreal.Vector(0, 0, 300), unreal.Rotator(-90, 0, 0))
-    light.rect_light_component.set_intensity(2000.0)
-    light.rect_light_component.set_editor_property('source_width', 100.0)
-    light.rect_light_component.set_editor_property('source_height', 50.0)
-
-LEVEL MANAGEMENT:
-
-  Get current level name:
-    import unreal, json
-    world = unreal.EditorLevelUtils if False else None
-    sub = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
-    print(json.dumps({'level': str(sub.get_editor_world().get_name())}))
-
-  Open a level:
-    unreal.EditorLoadingAndSavingUtils.load_map('/Game/Maps/MyLevel')
-
-  Play in Editor (PIE):
-    unreal.SystemLibrary.execute_console_command(None, 'ce StartPlay')
-    # Or use: editor subsystem
-    unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).play_in_editor()
-
-  Stop PIE:
-    unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).eject_pilot_level_actor()
-    unreal.SystemLibrary.execute_console_command(None, 'ce StopPlay')
-
-ALWAYS wrap scripts in try/except and print results as JSON:
-  import unreal, json
-  try:
-      # ... your code ...
-      print(json.dumps({'success': True, 'message': 'Done'}))
-  except Exception as e:
-      print(json.dumps({'success': False, 'error': str(e)}))
-${cameraContext}
-${projectInfo ? `PROJECT CONTEXT:\n${projectInfo}\n` : ''}Output ONLY the Python script:`;
-
-    const messages: { role: string; content: string }[] = [
-      ...conversationHistory.slice(-10), // last 10 messages for context
-      { role: 'user', content: userIntent },
+    const summaryMessages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: 'system', content: summarySystemPrompt },
+      { role: 'user', content: userPrompt },
     ];
 
-    if (this.provider === 'openai' && this.openai) {
-      const response = await this.openai.chat.completions.create({
-        model: this.modelOverride || 'gpt-4o',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-        ],
-        max_tokens: 1500,
+    // Always use the cheap model to minimize cost
+    if (this.openai || this.useProxy) {
+      if (this.useProxy && !this.openai) {
+        return await this.callProxyNonStreaming(summaryMessages, CHEAP_MODEL, 600);
+      }
+      const response = await this.openai!.chat.completions.create({
+        model: CHEAP_MODEL,
+        messages: summaryMessages,
+        max_tokens: 600,
       });
-      const script = response.choices[0]?.message?.content?.trim() ?? '';
-      // Strip markdown fences if model added them anyway
-      return script.replace(/^```python\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
-    } else if (this.provider === 'anthropic' && this.anthropic) {
+      return response.choices[0]?.message?.content?.trim() ?? '';
+    } else if (this.anthropic) {
       const response = await this.anthropic.messages.create({
-        model: this.modelOverride || 'claude-opus-4-6',
-        max_tokens: 1500,
-        system: systemPrompt,
-        messages: messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 600,
+        system: summarySystemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
       });
-      const textBlock = response.content.find(b => b.type === 'text');
-      const script = textBlock?.type === 'text' ? textBlock.text.trim() : '';
-      return script.replace(/^```python\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
-    } else {
-      throw new Error('AI provider not configured');
+      const textBlock = response.content.find((b) => b.type === 'text');
+      return textBlock?.type === 'text' ? textBlock.text.trim() : '';
     }
+
+    throw new Error('No AI provider configured for summarization');
+  }
+
+  // ===== Step Verification =====
+
+  async verifyStep(stepText: string, screenshot: CaptureResult): Promise<string> {
+    const systemPrompt =
+      'You verify whether a user completed a step in Unreal Engine (or other software). ' +
+      'Reply in one casual sentence max. Confirm it looks right or give a quick tip if something seems off.';
+
+    const userPrompt =
+      `The user just completed this step: "${stepText}". ` +
+      'Do you see it done in the screenshot? Reply in one short sentence — confirm it looks right or give a quick tip if something seems off.';
+
+    if (this.openai || this.useProxy) {
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+      ];
+      if (screenshot?.imageBase64) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: userPrompt },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot.imageBase64}`, detail: 'auto' } },
+          ],
+        });
+      } else {
+        messages.push({ role: 'user', content: userPrompt });
+      }
+      if (this.useProxy && !this.openai) {
+        return (await this.callProxyNonStreaming(messages, CHEAP_MODEL, 150)) || 'Looks good!';
+      }
+      const response = await this.openai!.chat.completions.create({ model: CHEAP_MODEL, messages, max_tokens: 150 });
+      return response.choices[0]?.message?.content?.trim() ?? 'Looks good!';
+    } else if (this.anthropic) {
+      const content: Anthropic.MessageCreateParams['content'] = [
+        { type: 'text', text: userPrompt },
+      ];
+      if (screenshot?.imageBase64) {
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: screenshot.imageBase64 },
+        });
+      }
+      const response = await this.anthropic.messages.create({
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 150,
+        system: systemPrompt,
+        messages: [{ role: 'user', content }],
+      });
+      const textBlock = response.content.find((b) => b.type === 'text');
+      return textBlock?.type === 'text' ? textBlock.text.trim() : 'Looks good!';
+    }
+
+    throw new Error('No AI provider configured for step verification');
+  }
+
+  // ===== Next Step Generation =====
+
+  async generateNextStep(params: {
+    goal: string;
+    currentStep: string;
+    stepHistory: string[];
+    screenshot: CaptureResult;
+  }): Promise<{ nextStep: string | null; isComplete: boolean; completionMessage?: string }> {
+    const { goal, currentStep, stepHistory, screenshot } = params;
+
+    const systemPrompt =
+      'You are guiding a user step by step through a task in Unreal Engine or another app. ' +
+      'Look at the screenshot and the steps already completed, then either provide the NEXT concise action step OR confirm the task is fully done. ' +
+      'Reply with ONLY valid JSON — no markdown, no explanation. ' +
+      'If there is a next step: {"nextStep": "...", "isComplete": false}. ' +
+      'If the task is done: {"nextStep": null, "isComplete": true, "completionMessage": "..."}.';
+
+    const historyText =
+      stepHistory.length > 0
+        ? `Steps already completed:\n${stepHistory.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nStep just completed: ${currentStep}`
+        : `Step just completed: ${currentStep}`;
+
+    const userPrompt = `Goal: ${goal}\n\n${historyText}\n\nLooking at the screenshot, what should the user do next? Reply with JSON only.`;
+
+    const parseResult = (raw: string): { nextStep: string | null; isComplete: boolean; completionMessage?: string } => {
+      let clean = raw.trim();
+      // Strip markdown code fences (Gemini sometimes wraps JSON in ```json ... ```)
+      if (clean.startsWith('```json')) {
+        clean = clean.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (clean.startsWith('```')) {
+        clean = clean.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
+      try {
+        return JSON.parse(clean);
+      } catch {
+        // Parsing failed — don't show raw JSON as a step, just request no new step
+        return { nextStep: null, isComplete: false };
+      }
+    };
+
+    if (this.openai) {
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+      ];
+      if (screenshot?.imageBase64) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: userPrompt },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot.imageBase64}`, detail: 'auto' } },
+          ],
+        });
+      } else {
+        messages.push({ role: 'user', content: userPrompt });
+      }
+      const response = await this.openai.chat.completions.create({
+        model: CHEAP_MODEL,
+        messages,
+        max_tokens: 500,
+      });
+      const raw = response.choices[0]?.message?.content?.trim() ?? '';
+      return parseResult(raw);
+    } else if (this.anthropic) {
+      const content: Anthropic.MessageCreateParams['content'] = [
+        { type: 'text', text: userPrompt },
+      ];
+      if (screenshot?.imageBase64) {
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: screenshot.imageBase64 },
+        });
+      }
+      const response = await this.anthropic.messages.create({
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: [{ role: 'user', content }],
+      });
+      const textBlock = response.content.find((b) => b.type === 'text');
+      const raw = textBlock?.type === 'text' ? textBlock.text.trim() : '';
+      return parseResult(raw);
+    }
+
+    throw new Error('No AI provider configured for next step generation');
+  }
+
+  // ===== Click Target Detection =====
+
+  async generateClickTarget(
+    stepText: string,
+    screenshot: CaptureResult,
+  ): Promise<ClickTarget | null> {
+    const systemPrompt =
+      'You are a precise UI element locator. Given a screenshot and a task description, ' +
+      'find the center of the UI element the user needs to interact with. ' +
+      'Express its position as normalized ratios: xRatio (0.0=left edge, 1.0=right edge) and yRatio (0.0=top edge, 1.0=bottom edge). ' +
+      'Reply with ONLY valid JSON — no markdown, no explanation: ' +
+      '{"xRatio": <0.00-1.00>, "yRatio": <0.00-1.00>, "confidence": <0.0-1.0>, "description": "<element name>"}. ' +
+      'If no specific clickable element is relevant (e.g. the step is a keyboard shortcut or text input), set confidence to 0.0.';
+
+    const userPrompt = `The user needs to do this: "${stepText}"\n\nLook at the screenshot and find the exact UI element they need to click. Return JSON only.`;
+
+    const parseTarget = (raw: string): ClickTarget | null => {
+      let clean = raw.trim();
+      if (clean.startsWith('```json')) clean = clean.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      else if (clean.startsWith('```')) clean = clean.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      try {
+        const parsed = JSON.parse(clean);
+        if (typeof parsed.xRatio === 'number' && typeof parsed.yRatio === 'number') {
+          return parsed as ClickTarget;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    };
+
+    if (this.openai) {
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+      ];
+      if (screenshot?.imageBase64) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: userPrompt },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot.imageBase64}`, detail: 'high' } },
+          ],
+        });
+      } else {
+        messages.push({ role: 'user', content: userPrompt });
+      }
+      const response = await this.openai.chat.completions.create({
+        model: CHEAP_MODEL,
+        messages,
+        max_tokens: 100,
+      });
+      return parseTarget(response.choices[0]?.message?.content?.trim() ?? '');
+    } else if (this.anthropic) {
+      const content: Anthropic.MessageCreateParams['content'] = [
+        { type: 'text', text: userPrompt },
+      ];
+      if (screenshot?.imageBase64) {
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: screenshot.imageBase64 },
+        });
+      }
+      const response = await this.anthropic.messages.create({
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 100,
+        system: systemPrompt,
+        messages: [{ role: 'user', content }],
+      });
+      const textBlock = response.content.find((b) => b.type === 'text');
+      return parseTarget(textBlock?.type === 'text' ? textBlock.text.trim() : '');
+    }
+
+    return null;
   }
 
   // ===== Action Plan Request =====
@@ -944,7 +1680,7 @@ Respond with JSON only:`;
 
     console.log('[AIClient] Calling OpenAI API...');
     const response = await this.openai.chat.completions.create({
-      model: this.modelOverride || 'gpt-4o',
+      model: this.modelOverride || PRIMARY_MODEL,
       messages,
       max_tokens: 2000,
       response_format: { type: 'json_object' },
@@ -983,7 +1719,7 @@ Respond with JSON only:`;
     }
 
     const response = await this.anthropic.messages.create({
-      model: this.modelOverride || 'claude-3-opus-20240229',
+      model: this.modelOverride || PRIMARY_MODEL,
       max_tokens: 2000,
       messages: [{ role: 'user', content }],
     });

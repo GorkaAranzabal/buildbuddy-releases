@@ -27,6 +27,7 @@ export class WindowManager {
   private isPinned: boolean = true;
   private isVisible: boolean = true;
   private inSettingsMode: boolean = false;
+  private inLoginMode: boolean = false;
   private isQuitting: boolean = false;
 
   // Window dimensions - Notch style UI
@@ -43,7 +44,7 @@ export class WindowManager {
 
     this.isCollapsed = true; // Always start in notch mode
     this.isPinned = true;
-    this.expandedBounds = { width: 480, height: 175 };
+    this.expandedBounds = { width: 480, height: 400 };
 
     const config: WindowConfig = {
       width: notchWidth,
@@ -76,8 +77,10 @@ export class WindowManager {
     // Handle resize constraints
     this.mainWindow.setMinimumSize(notchWidth, notchHeight);
 
-    // Ensure alwaysOnTop with 'floating' level (required for Windows consistency)
-    this.mainWindow.setAlwaysOnTop(true, 'floating');
+    // On Windows use 'screen-saver' level so the overlay stays above Unreal Engine's
+    // fullscreen/maximized renderer. 'floating' is sufficient on macOS.
+    const aotLevel = process.platform === 'win32' ? 'screen-saver' : 'floating';
+    this.mainWindow.setAlwaysOnTop(true, aotLevel);
 
     // Center window on screen after creation
     this.mainWindow.center();
@@ -128,7 +131,7 @@ export class WindowManager {
 
     // Track position changes
     this.mainWindow.on('moved', () => {
-      if (!this.isCollapsed) {
+      if (!this.isCollapsed && !this.inLoginMode) {
         const bounds = this.mainWindow?.getBounds();
         if (bounds) {
           this.expandedBounds = { width: bounds.width, height: bounds.height };
@@ -384,6 +387,8 @@ export class WindowManager {
         Math.min(expandedX, displayBounds.x + displayBounds.width - expandedWidth)
       );
 
+      // Make resizable BEFORE changing size constraints (required on Windows)
+      this.mainWindow.setResizable(true);
       // Remove constraints first to allow position change
       this.mainWindow.setMinimumSize(1, 1);
       this.mainWindow.setMaximumSize(10000, 10000);
@@ -396,10 +401,16 @@ export class WindowManager {
       // Allow free resizing within sensible bounds
       this.mainWindow.setMinimumSize(320, 130);
       this.mainWindow.setMaximumSize(800, 900);
-      this.mainWindow.setResizable(true);
       // Defensive: ensure window is fully visible when expanding.
       // Opacity may have been left at 0 by a failed/interrupted screenshot capture.
       this.mainWindow.setOpacity(1);
+    }
+
+    // Re-assert always-on-top after any bounds change — Windows resets z-order on resize
+    if (this.isPinned) {
+      const aotLevel = process.platform === 'win32' ? 'screen-saver' : 'floating';
+      this.mainWindow.setAlwaysOnTop(true, aotLevel);
+      this.mainWindow.moveTop();
     }
 
     // Notify renderer of state change
@@ -493,10 +504,46 @@ export class WindowManager {
     }
   }
 
+  /**
+   * Lock window to a fixed login size (non-resizable).
+   * Called when showing the login/onboarding screen.
+   */
+  setLoginMode(enabled: boolean): void {
+    if (!this.mainWindow) return;
+
+    this.inLoginMode = enabled;
+
+    if (enabled) {
+      const loginWidth = 480;
+      const loginHeight = 430; // fits all 3 login steps: email / plan / waiting
+
+      const currentBounds = this.mainWindow.getBounds();
+      const centerX = currentBounds.x + currentBounds.width / 2;
+
+      const display = screen.getDisplayNearestPoint({ x: centerX, y: currentBounds.y });
+      const displayBounds = display.workArea;
+
+      const loginX = Math.round(centerX - loginWidth / 2);
+      let loginY = currentBounds.y;
+      if (loginY + loginHeight > displayBounds.y + displayBounds.height) {
+        loginY = Math.max(displayBounds.y, displayBounds.y + displayBounds.height - loginHeight);
+      }
+
+      this.mainWindow.setMinimumSize(1, 1);
+      this.mainWindow.setMaximumSize(10000, 10000);
+      this.mainWindow.setBounds({ x: loginX, y: loginY, width: loginWidth, height: loginHeight });
+      this.mainWindow.setMinimumSize(loginWidth, loginHeight);
+      this.mainWindow.setMaximumSize(loginWidth, loginHeight);
+      this.mainWindow.setResizable(false);
+      this.isCollapsed = false; // treat as expanded for consistent state tracking
+    }
+  }
+
   setAlwaysOnTop(value: boolean): void {
     if (!this.mainWindow) return;
     this.isPinned = value;
-    this.mainWindow.setAlwaysOnTop(value, 'floating');
+    const aotLevel = process.platform === 'win32' ? 'screen-saver' : 'floating';
+    this.mainWindow.setAlwaysOnTop(value, aotLevel);
   }
 
   getState(): WindowState {

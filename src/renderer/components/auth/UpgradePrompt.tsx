@@ -1,13 +1,37 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { useAppStore } from '../../store';
 
 interface UpgradePromptProps {
   onDismiss: () => void;
+  title?: string;
   message?: string;
 }
 
-export function UpgradePrompt({ onDismiss, message }: UpgradePromptProps) {
+export function UpgradePrompt({ onDismiss, title, message }: UpgradePromptProps) {
+  const { authState, setAuthState } = useAppStore();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshed, setRefreshed] = useState(false);
+
   const handleUpgrade = () => {
     window.open('https://build-buddy.app/pricing', '_blank');
+  };
+
+  const handleRefreshPlan = async () => {
+    if (!authState?.email) return;
+    setIsRefreshing(true);
+    try {
+      const entitlement = await window.electronAPI.auth.checkEntitlement(authState.email);
+      setAuthState({ ...authState, entitlement });
+      if (entitlement.active) {
+        // Plan is now active — dismiss the prompt
+        onDismiss();
+        return;
+      }
+    } catch {
+      // ignore
+    }
+    setIsRefreshing(false);
+    setRefreshed(true);
   };
 
   return (
@@ -21,18 +45,30 @@ export function UpgradePrompt({ onDismiss, message }: UpgradePromptProps) {
         </div>
         <div className="flex-1">
           <p className="text-white/90 text-sm font-medium mb-1">
-            Weekly limit reached
+            {title || 'Weekly limit reached'}
           </p>
           <p className="text-white/50 text-xs mb-3">
             {message || "You've used all your free asks for this week. Upgrade to Pro for unlimited asks and the best AI model."}
           </p>
-          <div className="flex items-center gap-2">
+          {refreshed && (
+            <p className="text-white/40 text-xs mb-2">Plan is still showing as free. If you just upgraded, wait a minute and try again.</p>
+          )}
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={handleUpgrade}
               className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 rounded-lg text-black text-xs font-semibold transition-all"
             >
               Upgrade to Pro
             </button>
+            {authState?.email && (
+              <button
+                onClick={handleRefreshPlan}
+                disabled={isRefreshing}
+                className="px-3 py-1.5 text-white/50 hover:text-white/80 text-xs transition-all disabled:opacity-50"
+              >
+                {isRefreshing ? 'Checking...' : 'Already upgraded? Refresh'}
+              </button>
+            )}
             <button
               onClick={onDismiss}
               className="px-3 py-1.5 text-white/40 hover:text-white/60 text-xs transition-all"

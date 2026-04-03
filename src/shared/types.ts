@@ -2,6 +2,27 @@
 
 export type EngineType = 'unreal' | 'unity' | 'godot';
 
+// ===== Engine Selection (UI-level, separate from EngineType connector type) =====
+
+export type SelectedEngine = 'unreal' | 'uefn' | 'godot' | 'unity' | 'blender' | 'roblox' | null;
+
+export type EngineMCPStatus = 'disconnected' | 'starting' | 'connected' | 'error';
+
+export interface EngineSetupStep {
+  n: number;
+  title: string;
+  desc: string;
+  isAutomatic: boolean;
+  warn?: string;
+}
+
+export interface EngineSetupStatus {
+  engine: SelectedEngine;
+  stepsComplete: boolean;
+  pendingSteps: EngineSetupStep[];
+  error?: string;
+}
+
 export interface BaseEvent {
   type: string;
   engine: EngineType;
@@ -164,6 +185,13 @@ export interface RegionSelection {
   height: number;
 }
 
+export interface ClickTarget {
+  xRatio: number;      // normalized x position: 0.0 (left edge) to 1.0 (right edge)
+  yRatio: number;      // normalized y position: 0.0 (top edge) to 1.0 (bottom edge)
+  confidence: number;  // 0.0 – 1.0
+  description?: string;
+}
+
 // ===== Doc Image Types =====
 
 export interface DocImage {
@@ -183,8 +211,11 @@ export interface AIRequest {
   context: UnrealContext | null;
   screenshot: CaptureResult | null;
   mode: AssistantMode;
+  agentMode?: 'guide' | 'action';
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  memorySummary?: string;
   projectContext?: string;
+  editorSnapshot?: string;
 }
 
 export interface CodeSnippet {
@@ -221,6 +252,27 @@ export interface ChatMessage {
     codeSnippets: CodeSnippet[];
   };
   docImages?: Record<string, DocImage[]>;
+  isOrder?: boolean;
+}
+
+// ===== Conversation Thread Types =====
+
+export interface ConversationThread {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  memorySummary: string | null;
+  summarizedUpTo: number;
+  createdAt: number;
+  updatedAt: number;
+  projectName?: string;
+}
+
+export interface ThreadListItem {
+  id: string;
+  title: string;
+  updatedAt: number;
+  messageCount: number;
 }
 
 // ===== Session Types =====
@@ -274,6 +326,13 @@ export interface UserSettings {
 
   // Developer
   devMode?: boolean;
+
+  // Engine Selection
+  selectedEngine?: SelectedEngine;
+  godotProjectPath?: string;
+  unityProjectPath?: string;
+  uefnEnginePath?: string;
+  uefnProjectPath?: string;
 }
 
 export interface WindowState {
@@ -289,12 +348,17 @@ export interface WindowState {
 
 export interface StorageSchema {
   sessions: Session[];
+  threads: ConversationThread[];
+  activeThreadId: string | null;
   settings: UserSettings;
   hotkeyConfig: HotkeyConfig;
   windowState: WindowState;
   authEmail: string | null;
   dailyUsage: DailyUsage;
   projectAnalysis?: UEProjectAnalysis;
+  fairUseState?: FairUseState;
+  proxySessionToken?: string;
+  proxyTokenExpiresAt?: number;
 }
 
 // ===== UE Project Analysis =====
@@ -338,6 +402,17 @@ export interface MCPToolResult {
   success: boolean;
   data?: unknown;
   error?: string;
+}
+
+export interface MCPToolDefinition {
+  name: string;
+  description?: string;
+  inputSchema: {
+    type: 'object';
+    properties?: Record<string, object>;
+    required?: string[];
+    [key: string]: unknown;
+  };
 }
 
 // ===== Agent Action Types =====
@@ -408,6 +483,13 @@ export interface DailyUsage {
   askCount: number;
 }
 
+export interface FairUseState {
+  chatTimestamps: number[];    // Unix ms — sliding window for chat requests
+  rcTimestamps: number[];      // Unix ms — sliding window for remote-control requests
+  timeoutUntil: number | null; // Unix ms when current timeout expires; null = not timed out
+  violations: number[];        // Unix ms of each violation (for escalation)
+}
+
 // ===== IPC Types =====
 
 export interface IPCChannels {
@@ -434,7 +516,7 @@ export interface IPCChannels {
   'ai:ask': AIRequest;
   'ai:stream': string;
   'ai:complete': AIResponse;
-  'ai:error': { message: string };
+  'ai:error': { message: string; type?: string; unlockedAt?: number };
 
   // Storage
   'storage:save-session': Session;
@@ -458,6 +540,17 @@ export interface IPCChannels {
   'auth:check-can-ask': void;
   'auth:record-ask': void;
   'auth:get-usage': void;
+
+  // Threads
+  'threads:save': ConversationThread;
+  'threads:get': string;
+  'threads:list': number | undefined;
+  'threads:delete': string;
+  'threads:set-active': string | null;
+  'threads:get-active': void;
+
+  // AI Summarize
+  'ai:summarize': { messages: Array<{ role: string; content: string }>; existingSummary?: string };
 
   // Agent Actions
   'agent:request-plan': ActionPlanRequest;

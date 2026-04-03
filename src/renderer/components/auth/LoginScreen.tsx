@@ -17,6 +17,8 @@ export function LoginScreen({ onLogin, isLoading, error }: LoginScreenProps) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isMountedRef = useRef(true);
 
+  const [isCheckingEmail, setIsCheckingEmail] = useState(false);
+
   const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
   // Cleanup polling on unmount
@@ -68,9 +70,24 @@ export function LoginScreen({ onLogin, isLoading, error }: LoginScreenProps) {
     }
   };
 
-  const handleEmailSubmit = (e: React.FormEvent) => {
+  const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isValidEmail) return;
+
+    setIsCheckingEmail(true);
+    try {
+      const entitlement = await window.electronAPI.auth.checkEntitlement(email.trim().toLowerCase());
+      if (entitlement?.active) {
+        // Already Pro — skip plan selection and log straight in
+        await onLogin(email.trim().toLowerCase());
+        return;
+      }
+    } catch {
+      // API failure — fall through to plan selection safely
+    } finally {
+      setIsCheckingEmail(false);
+    }
+
     setStep('plan');
   };
 
@@ -143,10 +160,17 @@ export function LoginScreen({ onLogin, isLoading, error }: LoginScreenProps) {
 
           <button
             type="submit"
-            disabled={!isValidEmail}
+            disabled={!isValidEmail || isCheckingEmail}
             className="w-full px-4 py-3 bg-blue-500 hover:bg-blue-400 disabled:bg-white/[0.08] disabled:text-white/40 rounded-xl text-white text-sm font-medium transition-all"
           >
-            Continue
+            {isCheckingEmail ? (
+              <span className="flex items-center justify-center gap-2">
+                <div className="w-3.5 h-3.5 border-2 border-white/50 border-t-transparent rounded-full animate-spin" />
+                Checking...
+              </span>
+            ) : (
+              'Continue'
+            )}
           </button>
         </form>
       )}

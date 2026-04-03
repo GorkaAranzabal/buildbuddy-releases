@@ -12,6 +12,7 @@ const electronAPI = {
     growForConversation: () => ipcRenderer.send('window:grow-for-conversation'),
     enterSettings: () => ipcRenderer.send('window:enter-settings'),
     exitSettings: () => ipcRenderer.send('window:exit-settings'),
+    enterLogin: () => ipcRenderer.send('window:enter-login'),
   },
 
   // Vignette overlay (full-screen AI thinking effect)
@@ -24,6 +25,7 @@ const electronAPI = {
   capture: {
     fullscreen: () => ipcRenderer.send('capture:fullscreen'),
     fullscreenSync: () => ipcRenderer.invoke('capture:fullscreen-sync'),
+    fullscreenNoHide: () => ipcRenderer.invoke('capture:fullscreen-no-hide'),
     window: (windowId) => ipcRenderer.send('capture:window', windowId),
     region: () => ipcRenderer.send('capture:region'),
     getWindows: () => ipcRenderer.invoke('capture:get-windows'),
@@ -42,6 +44,10 @@ const electronAPI = {
   // AI assistant
   ai: {
     ask: (request) => ipcRenderer.send('ai:ask', request),
+    summarize: (params) => ipcRenderer.invoke('ai:summarize', params),
+    verifyStep: (params) => ipcRenderer.invoke('ai:verify-step', params),
+    generateNextStep: (params) => ipcRenderer.invoke('ai:generate-next-step', params),
+    generateClickTarget: (params) => ipcRenderer.invoke('ai:generate-click-target', params),
     onStream: (callback) => {
       const subscription = (_event, chunk) => callback(chunk);
       ipcRenderer.on('ai:stream', subscription);
@@ -57,6 +63,16 @@ const electronAPI = {
       ipcRenderer.on('ai:error', subscription);
       return () => ipcRenderer.removeListener('ai:error', subscription);
     },
+  },
+
+  // Conversation threads
+  threads: {
+    save: (thread) => ipcRenderer.invoke('threads:save', thread),
+    get: (id) => ipcRenderer.invoke('threads:get', id),
+    list: (limit) => ipcRenderer.invoke('threads:list', limit),
+    delete: (id) => ipcRenderer.invoke('threads:delete', id),
+    setActive: (id) => ipcRenderer.invoke('threads:set-active', id),
+    getActive: () => ipcRenderer.invoke('threads:get-active'),
   },
 
   // Connector (Unreal Engine)
@@ -117,6 +133,21 @@ const electronAPI = {
       ipcRenderer.on('updater:update-ready', subscription);
       return () => ipcRenderer.removeListener('updater:update-ready', subscription);
     },
+    onDownloading: (callback: (version: string) => void) => {
+      const subscription = (_event, data) => callback(data.version);
+      ipcRenderer.on('updater:downloading', subscription);
+      return () => ipcRenderer.removeListener('updater:downloading', subscription);
+    },
+    onDownloadProgress: (callback: (percent: number) => void) => {
+      const subscription = (_event, data) => callback(data.percent);
+      ipcRenderer.on('updater:download-progress', subscription);
+      return () => ipcRenderer.removeListener('updater:download-progress', subscription);
+    },
+    onError: (callback: (message: string) => void) => {
+      const subscription = (_event, data) => callback(data.message);
+      ipcRenderer.on('updater:error', subscription);
+      return () => ipcRenderer.removeListener('updater:error', subscription);
+    },
   },
 
   // Focus input (triggered by hotkey)
@@ -155,6 +186,7 @@ const electronAPI = {
   ue: {
     browseEnginePath: () => ipcRenderer.invoke('ue:browse-engine-path'),
     detectEnginePath: () => ipcRenderer.invoke('ue:detect-engine-path'),
+    detectUefnPath: () => ipcRenderer.invoke('ue:detect-uefn-path'),
     isConnected: () => ipcRenderer.invoke('ue:is-connected'),
     executeCommand: (command, params) => ipcRenderer.invoke('ue:execute-command', command, params),
     // Blueprint
@@ -173,18 +205,72 @@ const electronAPI = {
     getAssets: (path, type) => ipcRenderer.invoke('ue:get-assets', path, type),
   },
 
-  // Unreal MCP (MCP server via Python Remote Execution)
+  // Unreal MCP (Model Context Protocol)
   unrealMcp: {
     getStatus: () => ipcRenderer.invoke('unreal-mcp:get-status'),
     start: () => ipcRenderer.invoke('unreal-mcp:start'),
     stop: () => ipcRenderer.invoke('unreal-mcp:stop'),
     testConnection: () => ipcRenderer.invoke('unreal-mcp:test-connection'),
     callTool: (name, args) => ipcRenderer.invoke('unreal-mcp:call-tool', name, args),
-    executeIntent: (params) => ipcRenderer.invoke('unreal-mcp:execute-intent', params),
+    getTools: () => ipcRenderer.invoke('unreal-mcp:get-tools'),
     onStatusChange: (callback) => {
       const handler = (_event, status) => callback(status);
       ipcRenderer.on('unreal-mcp:status', handler);
       return () => ipcRenderer.removeListener('unreal-mcp:status', handler);
+    },
+  },
+
+  // Engine Selection
+  engine: {
+    getSelected: () => ipcRenderer.invoke('engine:get-selected'),
+    setSelected: (engine) => ipcRenderer.invoke('engine:set-selected', engine),
+    autoDetect: () => ipcRenderer.invoke('engine:auto-detect'),
+    checkSetup: (engine) => ipcRenderer.invoke('engine:check-setup', engine),
+    installDeps: (engine) => ipcRenderer.invoke('engine:install-deps', engine),
+    getSetupSteps: (engine) => ipcRenderer.invoke('engine:get-setup-steps', engine),
+    onSelected: (callback) => {
+      const handler = (_event, engine) => callback(engine);
+      ipcRenderer.on('engine:selected', handler);
+      return () => ipcRenderer.removeListener('engine:selected', handler);
+    },
+  },
+
+  // Unreal-specific helpers
+  unreal: {
+    selectProjectFolder: () => ipcRenderer.invoke('unreal:select-project-folder'),
+  },
+
+  // Godot-specific helpers
+  godot: {
+    installAddon: () => ipcRenderer.invoke('godot:install-addon'),
+  },
+
+  // Unity-specific helpers
+  unity: {
+    setupServer: () => ipcRenderer.invoke('unity:setup-server'),
+  },
+
+  // Blender-specific helpers
+  blender: {
+    showAddon: () => ipcRenderer.invoke('blender:show-addon'),
+    installAddon: () => ipcRenderer.invoke('blender:install-addon'),
+  },
+
+  // Fair-use rate limiting
+  fairuse: {
+    getState: () => ipcRenderer.invoke('fairuse:get-state'),
+  },
+
+  // Engine-agnostic MCP
+  engineMcp: {
+    getStatus: () => ipcRenderer.invoke('engine-mcp:get-status'),
+    start: () => ipcRenderer.invoke('engine-mcp:start'),
+    stop: () => ipcRenderer.invoke('engine-mcp:stop'),
+    callTool: (name, args) => ipcRenderer.invoke('engine-mcp:call-tool', name, args),
+    onStatusChange: (callback) => {
+      const handler = (_event, status) => callback(status);
+      ipcRenderer.on('engine-mcp:status', handler);
+      return () => ipcRenderer.removeListener('engine-mcp:status', handler);
     },
   },
 };

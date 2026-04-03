@@ -28,12 +28,40 @@ npm run build
 npm run package
 ```
 
-### Unreal Engine Plugin
+### Unreal Engine Plugins
+
+**GorkaCopilotConnector** (WebSocket overlay integration):
 
 1. Copy `unreal-plugin/GorkaCopilotConnector` to your project's `Plugins` folder
 2. Regenerate project files
 3. Build and run your project
 4. The plugin auto-connects to the overlay app on port 9876
+
+**UnrealMCP** (Cursor MCP integration for Blueprints, actors, UMG widgets):
+
+1. Copy `unreal-plugin/UnrealMCP` to your project's `Plugins` folder
+2. Regenerate project files and build the project
+3. The plugin starts a TCP server on port 55557 when the editor loads
+4. Requires Unreal Engine 5.5+ and the EditorScriptingUtilities plugin (auto-enabled)
+
+### Cursor MCP Server (Unreal Engine)
+
+The project includes an MCP server that lets Cursor control Unreal Engine via natural language. It provides 30+ tools for actor management, Blueprint creation, node graph editing, UMG widgets, and more.
+
+**Prerequisites:**
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) package manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- UnrealMCP plugin installed and enabled in your Unreal project (see above)
+
+**Setup:**
+The MCP server is already configured in `.cursor/mcp.json`. Once the UnrealMCP plugin is running in your Unreal Editor, Cursor can connect automatically.
+
+**Available tool categories:**
+- **Editor**: spawn/delete actors, set transforms, get/set properties, find actors
+- **Blueprints**: create Blueprint classes, add components, set physics, compile
+- **Node Graph**: add event/function nodes, connect nodes, add variables
+- **UMG Widgets**: create widget blueprints, add buttons/text, bind events
+- **Project**: create input mappings
 
 ## Configuration
 
@@ -78,8 +106,11 @@ gorka-copilot-overlay/
 │   │   ├── store/      # Zustand state management
 │   │   └── ...
 │   └── shared/         # Shared types
-└── unreal-plugin/      # UE5 connector plugin
-    └── GorkaCopilotConnector/
+├── unreal-plugin/      # UE5 plugins
+│   ├── GorkaCopilotConnector/  # WebSocket overlay connector
+│   └── UnrealMCP/              # MCP TCP server plugin
+└── unreal-mcp/         # Cursor MCP server (Python)
+    └── Python/         # FastMCP server + tool modules
 ```
 
 ## Development
@@ -88,7 +119,8 @@ gorka-copilot-overlay/
 
 - Node.js 20+
 - npm 10+ or yarn 4+
-- Unreal Engine 5.3+ (for plugin development)
+- Unreal Engine 5.5+ (for plugin development)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/) (for MCP server)
 
 ### Scripts
 

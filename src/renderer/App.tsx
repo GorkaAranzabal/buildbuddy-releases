@@ -4,6 +4,8 @@ import { NotchBar, RobotStatus } from './components/layout/NotchBar';
 import { ExpandedPanel } from './components/layout/ExpandedPanel';
 import { SettingsPanel } from './components/layout/SettingsPanel';
 import { LoginScreen } from './components/auth/LoginScreen';
+import { EngineOnboardingCard } from './components/engines/EngineOnboardingCard';
+import type { SelectedEngine } from '../../shared/types';
 
 type ViewMode = 'collapsed' | 'chat' | 'settings' | 'login';
 
@@ -13,11 +15,16 @@ function App() {
     setSettings, setHotkeyConfig, isLoading, messages,
     setAuthState, setDailyUsage, clearAuth,
     setUnrealMCPStatus,
+    selectedEngine, setSelectedEngine, setEngineMCPStatus, setEngineSetupStatus, setEngineSetupOpen,
+    engineSetupStatus, isEngineSetupOpen,
   } = useAppStore();
   const [isReady, setIsReady] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('collapsed');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
+  const [updateDownloading, setUpdateDownloading] = useState<string | null>(null); // version string while downloading
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const isExpanded = viewMode !== 'collapsed' && viewMode !== 'login';
 
   // Track vignette state to handle show/hide properly
@@ -54,6 +61,23 @@ function App() {
 
     const usage = await window.electronAPI.auth.getUsage();
     setDailyUsage(usage);
+
+    // Load persisted engine selection
+    const engine = await window.electronAPI.engine.getSelected();
+    setSelectedEngine(engine);
+
+    const engineMCPStatus = await window.electronAPI.engineMcp.getStatus();
+    setEngineMCPStatus(engineMCPStatus);
+
+    // Auto-detect engine on first launch
+    if (!engine) {
+      window.electronAPI.engine.autoDetect().then((detected: SelectedEngine) => {
+        if (detected) {
+          setSelectedEngine(detected);
+          window.electronAPI.engine.setSelected(detected);
+        }
+      }).catch(() => {});
+    }
   };
 
   useEffect(() => {
@@ -72,10 +96,10 @@ function App() {
         setAuthState(auth);
 
         if (!auth.isLoggedIn) {
-          // Not logged in - show login, expand window
+          // Not logged in - show login, set fixed login window size
           setViewMode('login');
           setCollapsed(false);
-          window.electronAPI?.window.collapse(false);
+          window.electronAPI?.window.enterLogin();
           setIsReady(true);
           return;
         }
@@ -106,6 +130,14 @@ function App() {
     });
     window.electronAPI.unrealMcp.getStatus().then(setUnrealMCPStatus);
 
+    // Subscribe to engine selection + engine MCP status
+    const unsubscribeEngineSelected = window.electronAPI.engine.onSelected((engine: SelectedEngine) => {
+      setSelectedEngine(engine);
+    });
+    const unsubscribeEngineMCP = window.electronAPI.engineMcp.onStatusChange((status) => {
+      setEngineMCPStatus(status);
+    });
+
     // Listen for focus-input hotkey to expand (always expand, don't toggle)
     const unsubscribeFocus = window.electronAPI.onFocusInput(() => {
       setViewMode((current) => {
@@ -115,14 +147,53 @@ function App() {
       setCollapsed(false);
     });
 
+    // Listen for updater events
+    const unsubscribeUpdateReady = window.electronAPI.updater.onUpdateReady(() => {
+      setUpdateReady(true);
+      setUpdateDownloading(null);
+      setUpdateError(null);
+    });
+    const unsubscribeDownloading = window.electronAPI.updater.onDownloading((version) => {
+      setUpdateDownloading(version);
+      setUpdateError(null);
+    });
+    const unsubscribeUpdateError = window.electronAPI.updater.onError((message) => {
+      setUpdateError(message);
+      setUpdateDownloading(null);
+    });
+
+    // Silently re-check entitlement when the window gains focus.
+    // Catches users who just purchased Pro while the app was already open.
+    const handleWindowFocus = async () => {
+      const currentAuth = useAppStore.getState().authState;
+      if (!currentAuth?.isLoggedIn || !currentAuth.email) return;
+      // Only re-check if the current result is non-pro (saves API calls for paying users)
+      if (currentAuth.entitlement?.active) return;
+      try {
+        const entitlement = await window.electronAPI.auth.checkEntitlement(currentAuth.email);
+        if (entitlement.active) {
+          setAuthState({ ...currentAuth, entitlement });
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('focus', handleWindowFocus);
+
     // Cleanup
     return () => {
       unsubscribeConnectorStatus();
       unsubscribeContextUpdate();
       unsubscribeFocus();
       unsubscribeMCPStatus();
+      unsubscribeEngineSelected();
+      unsubscribeEngineMCP();
+      unsubscribeUpdateReady();
+      unsubscribeDownloading();
+      unsubscribeUpdateError();
+      window.removeEventListener('focus', handleWindowFocus);
     };
-  }, [setCollapsed, setConnectorStatus, setCurrentContext, setSettings, setHotkeyConfig, setAuthState, setDailyUsage, setUnrealMCPStatus]);
+  }, [setCollapsed, setConnectorStatus, setCurrentContext, setSettings, setHotkeyConfig, setAuthState, setDailyUsage, setUnrealMCPStatus, setSelectedEngine, setEngineMCPStatus]);
 
   const handleLogin = async (email: string) => {
     setIsLoggingIn(true);
@@ -149,7 +220,7 @@ function App() {
     window.electronAPI?.window.exitSettings();
     setViewMode('login');
     setCollapsed(false);
-    window.electronAPI?.window.collapse(false);
+    window.electronAPI?.window.enterLogin();
   };
 
   const handleToggleExpanded = () => {
@@ -180,6 +251,22 @@ function App() {
   const handleBackToChat = () => {
     setViewMode('chat');
     window.electronAPI?.window.exitSettings();
+  };
+
+  const handleEngineChange = async (engine: SelectedEngine) => {
+    setSelectedEngine(engine);
+    await window.electronAPI.engine.setSelected(engine);
+    if (engine) {
+      if (engine !== 'unreal') {
+        // Kick off auto-install in background (not needed for Unreal)
+        window.electronAPI.engine.installDeps(engine).catch(() => {});
+      }
+      const setup = await window.electronAPI.engine.checkSetup(engine);
+      if (setup && !setup.stepsComplete) {
+        setEngineSetupStatus(setup);
+        setEngineSetupOpen(true);
+      }
+    }
   };
 
   // Determine robot status based on the conversation
@@ -222,15 +309,22 @@ function App() {
 
   return (
     <div className="w-full h-full flex flex-col items-center pt-0">
-      {/* Notch Bar - Hidden during login */}
+      {/* Notch Bar - Hidden during login. z-[60] ensures dropdowns inside (which create a new stacking context via backdropFilter) render above ExpandedPanel */}
       {viewMode !== 'login' && (
-        <NotchBar
-          isExpanded={isExpanded}
-          onToggle={handleToggleExpanded}
-          onSettings={handleOpenSettings}
-          isLoading={isLoading}
-          robotStatus={robotStatus}
-        />
+        <div className="relative z-[60]">
+          <NotchBar
+            isExpanded={isExpanded}
+            onToggle={handleToggleExpanded}
+            onSettings={handleOpenSettings}
+            isLoading={isLoading}
+            robotStatus={robotStatus}
+            selectedEngine={selectedEngine}
+            onEngineChange={handleEngineChange}
+            updateReady={updateReady}
+            updateDownloading={updateDownloading}
+            updateError={updateError}
+          />
+        </div>
       )}
 
       {/* Login Screen */}
@@ -250,6 +344,22 @@ function App() {
       {/* Settings Panel - Shows when in settings mode */}
       {viewMode === 'settings' && (
         <SettingsPanel onClose={handleClose} onBack={handleBackToChat} onLogout={handleLogout} />
+      )}
+
+      {/* Engine Onboarding Card - Overlay for first-time engine setup */}
+      {isEngineSetupOpen && engineSetupStatus && (
+        <EngineOnboardingCard
+          setupStatus={engineSetupStatus}
+          onDone={async () => {
+            setEngineSetupOpen(false);
+            if (selectedEngine === 'unreal') {
+              await window.electronAPI.unrealMcp.start();
+            } else {
+              await window.electronAPI.engineMcp.start();
+            }
+          }}
+          onDismiss={() => setEngineSetupOpen(false)}
+        />
       )}
     </div>
   );

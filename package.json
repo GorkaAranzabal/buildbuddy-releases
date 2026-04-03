@@ -1,29 +1,29 @@
 {
   "name": "gorka-copilot-overlay",
   "productName": "BuildBuddy",
-  "version": "1.0.15",
+  "version": "1.0.28",
   "description": "Desktop overlay assistant for Unreal Engine developers",
-  "type": "module",
   "main": "dist/main/index.js",
   "author": "Gorka Copilot Team",
   "license": "MIT",
   "scripts": {
     "dev": "vite",
-    "dev:electron": "vite build && electron .",
+    "dev:electron": "vite build && unset ELECTRON_RUN_AS_NODE && electron .",
     "build": "vite build",
     "build:renderer": "vite build",
     "preview": "vite preview",
     "package": "vite build && electron-builder",
     "package:mac": "vite build && electron-builder --mac --dir",
     "package:win": "vite build && electron-builder --win",
-    "publish": "export $(grep -v '^#' .env.local | xargs) && vite build && electron-builder --publish always",
+    "publish": "export $(grep -v '^#' .env.local | xargs) && vite build && electron-builder --mac --win --publish always",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.17.0",
+    "@anthropic-ai/sdk": "^0.37.0",
     "@jitsi/robotjs": "^0.6.21",
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@runreal/unreal-mcp": "^0.1.4",
     "electron-store": "^8.1.0",
     "electron-updater": "^6.7.3",
     "lowdb": "^7.0.1",
@@ -35,7 +35,8 @@
     "unreal-remote-execution": "^1.0.0",
     "uuid": "^9.0.1",
     "ws": "^8.16.0",
-    "zustand": "^4.5.0"
+    "zustand": "^4.5.0",
+    "gopeak": "^2.3.3"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
@@ -48,7 +49,7 @@
     "@typescript-eslint/parser": "^7.0.1",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.17",
-    "electron": "^28.2.2",
+    "electron": "^28.3.3",
     "electron-builder": "^24.13.3",
     "eslint": "^8.56.0",
     "eslint-plugin-react": "^7.33.2",
@@ -81,10 +82,16 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": false,
+      "notarize": {
+        "teamId": "998D48RKV7"
+      },
       "extendInfo": {
         "NSAppleEventsUsageDescription": "BuildBuddy needs permission to control your computer to perform automated actions.",
-        "NSAccessibilityUsageDescription": "BuildBuddy needs accessibility access to control mouse and keyboard for the 'Do it for me' feature."
+        "NSAccessibilityUsageDescription": "BuildBuddy needs accessibility access to control mouse and keyboard for the 'Do it for me' feature.",
+        "NSLocalNetworkUsageDescription": "BuildBuddy needs local network access to communicate with Unreal Engine via Remote Execution.",
+        "NSBonjourServices": [
+          "_ue4-py-remote._tcp"
+        ]
       }
     },
     "win": {
@@ -96,16 +103,24 @@
           ]
         }
       ],
-      "icon": "build/icon.png",
-      "signingHashAlgorithms": ["sha256"],
+      "icon": "build/icon.ico",
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
       "signDlls": true
     },
     "publish": {
       "provider": "github",
       "owner": "GorkaAranzabal",
       "repo": "buildbuddy-releases",
-      "releaseType": "draft"
+      "releaseType": "release"
     },
+    "asarUnpack": [
+      "node_modules/@runreal/unreal-mcp/**",
+      "node_modules/@modelcontextprotocol/**",
+      "node_modules/gopeak/**",
+      "**/*.node"
+    ],
     "extraResources": [
       {
         "from": "node_modules/@jitsi/robotjs",
@@ -114,7 +129,12 @@
       {
         "from": "build/icon.png",
         "to": "tray-icon.png"
+      },
+      {
+        "from": "node_modules/gopeak/build/addon",
+        "to": "godot-addon"
       }
     ]
-  }
+  },
+  "type": "module"
 }

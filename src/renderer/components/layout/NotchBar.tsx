@@ -3,6 +3,8 @@ import robotIdleImg from '../../assets/robot-idle.png';
 import robotThinkingImg from '../../assets/robot-thinking.png';
 import robotErrorImg from '../../assets/robot-error.png';
 import robotSuccessImg from '../../assets/robot-success.png';
+import { EnginePickerButton } from '../engines/EnginePickerButton';
+import type { SelectedEngine } from '../../../../shared/types';
 
 export type RobotStatus = 'idle' | 'thinking' | 'error' | 'success';
 
@@ -13,6 +15,11 @@ interface NotchBarProps {
   onSettings?: () => void;
   isLoading?: boolean;
   robotStatus?: RobotStatus;
+  selectedEngine?: SelectedEngine;
+  onEngineChange?: (engine: SelectedEngine) => void;
+  updateReady?: boolean;
+  updateDownloading?: string | null;
+  updateError?: string | null;
 }
 
 const robotImages: Record<RobotStatus, string> = {
@@ -22,7 +29,14 @@ const robotImages: Record<RobotStatus, string> = {
   success: robotSuccessImg,
 };
 
-export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, robotStatus = 'idle' }: NotchBarProps) {
+export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, robotStatus = 'idle', selectedEngine, onEngineChange, updateReady, updateDownloading, updateError }: NotchBarProps) {
+  const handleSettingsOrUpdate = () => {
+    if (updateReady) {
+      window.electronAPI.updater.install();
+    } else {
+      onSettings?.();
+    }
+  };
   // Determine which image to show
   const currentStatus: RobotStatus = isLoading ? 'thinking' : robotStatus;
   const robotImage = robotImages[currentStatus];
@@ -50,7 +64,7 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
       {/* Drag Handle (leftmost) - visual affordance for moving the notch */}
       <div
         ref={dragHandleRef}
-        className="drag-handle flex items-center justify-center w-4 h-full opacity-25 hover:opacity-55 transition-opacity duration-200"
+        className="drag-handle flex items-center justify-center w-4 h-full opacity-30 hover:opacity-60 transition-opacity duration-200"
         onMouseDown={handleDragStart}
         title="Drag to move"
       >
@@ -72,6 +86,14 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
           className="w-6 h-6 object-cover"
         />
       </div>
+
+      {/* Engine Picker — only in expanded state to keep the compact notch minimal */}
+      {isExpanded && onEngineChange && (
+        <EnginePickerButton
+          selectedEngine={selectedEngine ?? null}
+          onEngineChange={onEngineChange}
+        />
+      )}
 
       {/* Ask Button (Center) */}
       <button
@@ -100,11 +122,16 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
         )}
       </button>
 
-      {/* Settings Button (Right) */}
+      {/* Settings Button (Right) — badge reflects update state */}
       <button
-        onClick={onSettings}
-        className="w-8 h-8 rounded-full bg-white/[0.08] hover:bg-white/[0.15] flex items-center justify-center no-drag transition-all duration-200"
-        title="Settings"
+        onClick={handleSettingsOrUpdate}
+        className="relative w-8 h-8 rounded-full bg-white/[0.08] hover:bg-white/[0.15] flex items-center justify-center no-drag transition-all duration-200"
+        title={
+          updateReady ? 'Update ready — click to install' :
+          updateError ? 'Update failed — click for settings' :
+          updateDownloading ? `Downloading update v${updateDownloading}…` :
+          'Settings'
+        }
       >
         <svg className="w-4 h-4 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path
@@ -120,6 +147,25 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
             d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
           />
         </svg>
+        {/* Green pulsing dot: update downloaded and ready to install */}
+        {updateReady && (
+          <span className="absolute top-0.5 right-0.5 flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+          </span>
+        )}
+        {/* Blue spinning dot: update is being downloaded */}
+        {!updateReady && updateDownloading && (
+          <span className="absolute top-0.5 right-0.5 flex h-2.5 w-2.5">
+            <span className="animate-spin inline-flex h-2.5 w-2.5 rounded-full border border-blue-400 border-t-transparent" />
+          </span>
+        )}
+        {/* Red dot: download failed */}
+        {!updateReady && !updateDownloading && updateError && (
+          <span className="absolute top-0.5 right-0.5 flex h-2.5 w-2.5">
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+          </span>
+        )}
       </button>
     </div>
   );

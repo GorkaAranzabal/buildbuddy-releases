@@ -1,13 +1,16 @@
 import pkg from 'electron-updater';
 const { autoUpdater } = pkg;
 import type { BrowserWindow } from 'electron';
+import { app } from 'electron';
 
 const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export class AutoUpdaterService {
   private mainWindow: BrowserWindow | null = null;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private isUpdating = false;
+  private downloadTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   initialize(mainWindow: BrowserWindow): void {
     this.mainWindow = mainWindow;
@@ -24,6 +27,13 @@ export class AutoUpdaterService {
 
     autoUpdater.on('update-available', (info) => {
       console.log('[AutoUpdater] Update available:', info.version);
+      this.mainWindow?.webContents.send('updater:downloading', { version: info.version });
+      // Start 5-minute timeout — if download hasn't finished by then, tell UI to offer manual download
+      if (this.downloadTimeoutId) clearTimeout(this.downloadTimeoutId);
+      this.downloadTimeoutId = setTimeout(() => {
+        console.warn('[AutoUpdater] Download timed out after 5 minutes');
+        this.mainWindow?.webContents.send('updater:error', { message: 'Download timed out. Please update manually.' });
+      }, DOWNLOAD_TIMEOUT_MS);
     });
 
     autoUpdater.on('update-not-available', () => {
@@ -32,15 +42,25 @@ export class AutoUpdaterService {
 
     autoUpdater.on('download-progress', (progress) => {
       console.log(`[AutoUpdater] Download: ${Math.round(progress.percent)}%`);
+      this.mainWindow?.webContents.send('updater:download-progress', { percent: Math.round(progress.percent) });
     });
 
     autoUpdater.on('update-downloaded', (info) => {
       console.log('[AutoUpdater] Update downloaded:', info.version);
+      if (this.downloadTimeoutId) {
+        clearTimeout(this.downloadTimeoutId);
+        this.downloadTimeoutId = null;
+      }
       this.mainWindow?.webContents.send('updater:update-ready');
     });
 
     autoUpdater.on('error', (error) => {
       console.error('[AutoUpdater] Error:', error.message);
+      if (this.downloadTimeoutId) {
+        clearTimeout(this.downloadTimeoutId);
+        this.downloadTimeoutId = null;
+      }
+      this.mainWindow?.webContents.send('updater:error', { message: error.message });
     });
 
     // Check for updates after a short delay to not block startup
@@ -74,13 +94,22 @@ export class AutoUpdaterService {
     console.log('[AutoUpdater] Installing update and restarting...');
     this.isUpdating = true;
 
-    // On macOS (zip updater): isSilent=false is required — passing true causes the app
-    // to quit without relaunching on some macOS versions (the new binary is placed but
-    // never opened). isForceRunAfter=true ensures the new version opens after install.
-    //
-    // On Windows (NSIS): isSilent=true runs the installer without a UAC dialog chain,
-    // isForceRunAfter=true relaunches the app automatically after the installer finishes.
-    const isSilent = process.platform !== 'darwin';
-    autoUpdater.quitAndInstall(isSilent, true);
+    if (process.platform === 'darwin') {
+      // Squirrel.Mac's built-in isForceRunAfter=true is unreliable on macOS 12+
+      // (Ventura/Sonoma) — the app quits and update installs but relaunch never fires.
+      // Instead: spawn a detached shell watcher that polls until this process exits,
+      // waits 1s for Squirrel.Mac to finish placing the new bundle, then opens it.
+      const { spawn } = require('child_process');
+      const appPath = app.getPath('exe').split('/Contents/MacOS/')[0];
+      spawn('bash', [
+        '-c',
+        `while kill -0 ${process.pid} 2>/dev/null; do sleep 0.1; done; sleep 1; open '${appPath}'`,
+      ], { detached: true, stdio: 'ignore' }).unref();
+      // false = don't attempt built-in relaunch (our watcher handles it)
+      autoUpdater.quitAndInstall(false, false);
+    } else {
+      // Windows NSIS: silent install, auto-relaunch via installer
+      autoUpdater.quitAndInstall(true, true);
+    }
   }
 }

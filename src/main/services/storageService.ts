@@ -4,10 +4,13 @@ import path from 'path';
 import fs from 'fs';
 import { app, safeStorage } from 'electron';
 import type {
+  ConversationThread,
   DailyUsage,
+  FairUseState,
   HotkeyConfig,
   Session,
   StorageSchema,
+  ThreadListItem,
   UEProjectAnalysis,
   UserSettings,
   WindowState,
@@ -30,6 +33,11 @@ const DEFAULT_SETTINGS: UserSettings = {
   unrealMCPEnabled: false,
   unrealEnginePath: '',
   devMode: false,
+  selectedEngine: null,
+  godotProjectPath: '',
+  unityProjectPath: '',
+  uefnEnginePath: '',
+  uefnProjectPath: '',
 };
 
 const DEFAULT_HOTKEY_CONFIG: HotkeyConfig = {
@@ -54,10 +62,18 @@ const DEFAULT_DAILY_USAGE: DailyUsage = {
   askCount: 0,
 };
 
+const DEFAULT_FAIR_USE_STATE: FairUseState = {
+  chatTimestamps: [],
+  rcTimestamps: [],
+  timeoutUntil: null,
+  violations: [],
+};
+
 export class StorageService {
   private db: Low<StorageSchema> | null = null;
   private dataPath: string;
   private maxSessions: number = 100;
+  private maxThreads: number = 50;
 
   constructor() {
     this.dataPath = path.join(
@@ -76,6 +92,8 @@ export class StorageService {
     const adapter = new JSONFile<StorageSchema>(this.dataPath);
     this.db = new Low(adapter, {
       sessions: [],
+      threads: [],
+      activeThreadId: null,
       settings: DEFAULT_SETTINGS,
       hotkeyConfig: DEFAULT_HOTKEY_CONFIG,
       windowState: DEFAULT_WINDOW_STATE,
@@ -103,6 +121,15 @@ export class StorageService {
     }
     if (!this.db.data.dailyUsage) {
       this.db.data.dailyUsage = DEFAULT_DAILY_USAGE;
+    }
+    if (!this.db.data.threads) {
+      this.db.data.threads = [];
+    }
+    if (this.db.data.activeThreadId === undefined) {
+      this.db.data.activeThreadId = null;
+    }
+    if (!this.db.data.fairUseState) {
+      this.db.data.fairUseState = DEFAULT_FAIR_USE_STATE;
     }
 
     await this.db.write();
@@ -150,6 +177,66 @@ export class StorageService {
     if (!this.db) throw new Error('Database not initialized');
 
     this.db.data.sessions = [];
+    await this.db.write();
+  }
+
+  // ============ Threads ============
+
+  async saveThread(thread: ConversationThread): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    const idx = this.db.data.threads.findIndex((t) => t.id === thread.id);
+    if (idx >= 0) {
+      this.db.data.threads[idx] = thread;
+    } else {
+      this.db.data.threads.unshift(thread);
+    }
+
+    // Sort by updatedAt descending and cap at maxThreads
+    this.db.data.threads.sort((a, b) => b.updatedAt - a.updatedAt);
+    if (this.db.data.threads.length > this.maxThreads) {
+      this.db.data.threads = this.db.data.threads.slice(0, this.maxThreads);
+    }
+
+    await this.db.write();
+  }
+
+  async getThread(id: string): Promise<ConversationThread | null> {
+    if (!this.db) throw new Error('Database not initialized');
+    return this.db.data.threads.find((t) => t.id === id) || null;
+  }
+
+  async getThreads(limit?: number): Promise<ThreadListItem[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    const sorted = [...this.db.data.threads].sort((a, b) => b.updatedAt - a.updatedAt);
+    const sliced = limit ? sorted.slice(0, limit) : sorted;
+    return sliced.map((t) => ({
+      id: t.id,
+      title: t.title,
+      updatedAt: t.updatedAt,
+      messageCount: t.messages.length,
+    }));
+  }
+
+  async deleteThread(id: string): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    this.db.data.threads = this.db.data.threads.filter((t) => t.id !== id);
+    if (this.db.data.activeThreadId === id) {
+      this.db.data.activeThreadId = null;
+    }
+    await this.db.write();
+  }
+
+  async getActiveThreadId(): Promise<string | null> {
+    if (!this.db) throw new Error('Database not initialized');
+    return this.db.data.activeThreadId;
+  }
+
+  async setActiveThreadId(id: string | null): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    this.db.data.activeThreadId = id;
     await this.db.write();
   }
 
@@ -262,6 +349,28 @@ export class StorageService {
     await this.db.write();
   }
 
+  async getProxyToken(): Promise<{ token: string; expiresAt: number } | null> {
+    if (!this.db) throw new Error('Database not initialized');
+    const token = this.db.data.proxySessionToken;
+    const expiresAt = this.db.data.proxyTokenExpiresAt;
+    if (!token || !expiresAt) return null;
+    return { token, expiresAt };
+  }
+
+  async setProxyToken(token: string, expiresAt: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    this.db.data.proxySessionToken = token;
+    this.db.data.proxyTokenExpiresAt = expiresAt;
+    await this.db.write();
+  }
+
+  async clearProxyToken(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    this.db.data.proxySessionToken = undefined;
+    this.db.data.proxyTokenExpiresAt = undefined;
+    await this.db.write();
+  }
+
   // ============ Weekly Usage ============
 
   /** Returns the ISO date string of the Monday that starts the current week. */
@@ -303,6 +412,19 @@ export class StorageService {
   async resetDailyUsage(): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
     this.db.data.dailyUsage = { date: this.getWeekStart(), askCount: 0 };
+    await this.db.write();
+  }
+
+  // ============ Fair Use ============
+
+  async getFairUseState(): Promise<FairUseState> {
+    if (!this.db) throw new Error('Database not initialized');
+    return { ...DEFAULT_FAIR_USE_STATE, ...this.db.data.fairUseState };
+  }
+
+  async setFairUseState(state: FairUseState): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    this.db.data.fairUseState = state;
     await this.db.write();
   }
 

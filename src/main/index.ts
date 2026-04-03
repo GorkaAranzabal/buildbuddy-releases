@@ -4,7 +4,7 @@ import { WindowManager } from './windowManager';
 import { WebSocketServer } from './services/websocketServer';
 import { ScreenshotService } from './services/screenshotService';
 import { HotkeyManager } from './services/hotkeyManager';
-import { AIClientService } from './services/aiClient';
+import { AIClientService, ACTIVE_AI_BACKEND } from './services/aiClient';
 import { StorageService } from './services/storageService';
 import { AgentExecutor } from './services/agentExecutor';
 import { UECommandService } from './services/ueCommandService';
@@ -13,10 +13,16 @@ import { AutoUpdaterService } from './services/autoUpdaterService';
 import { DocImageService } from './services/docImageService';
 import { ProjectAnalysisService } from './services/projectAnalysisService';
 import { UnrealMCPService } from './services/unrealMCPService';
-import type { AIRequest, CaptureMode, Session, UserSettings, HotkeyConfig, ActionPlanRequest, AgentAction, UECommandType, UnrealContext } from '../shared/types';
+import { UnrealMCPAdapter } from './services/engines/unrealMCPAdapter';
+import { GodotMCPAdapter } from './services/engines/godotMCPAdapter';
+import { BlenderMCPAdapter } from './services/engines/blenderMCPAdapter';
+import { EngineRegistryService } from './services/engineRegistryService';
+import { FairUseService } from './services/fairUseService';
+import type { AIRequest, CaptureMode, CaptureResult, ConversationThread, Session, UserSettings, HotkeyConfig, ActionPlanRequest, AgentAction, UECommandType, UnrealContext, SelectedEngine } from '../shared/types';
 import {
   initAnalytics, trackAppLaunched, trackAppInstalled, trackPlanIdentified,
   trackFeatureUsed, trackScreenCaptureTaken, trackRemoteControlCommand,
+  trackAIRequest, trackFairUseTimeout, trackEngineConnected, estimateCostUsd,
   shutdownAnalytics,
 } from './analytics';
 
@@ -53,6 +59,8 @@ class GorkaCopilotApp {
   private docImageService: DocImageService;
   private projectAnalysisService: ProjectAnalysisService;
   private unrealMCPService: UnrealMCPService;
+  private engineRegistry: EngineRegistryService;
+  private fairUseService: FairUseService;
   private tray: Tray | null = null;
 
   constructor() {
@@ -65,10 +73,19 @@ class GorkaCopilotApp {
     this.agentExecutor = new AgentExecutor();
     this.ueCommandService = new UECommandService(this.webSocketServer);
     this.entitlementService = new EntitlementService(this.storageService);
+    this.fairUseService = new FairUseService(this.storageService, this.entitlementService);
     this.autoUpdaterService = new AutoUpdaterService();
     this.docImageService = new DocImageService();
     this.projectAnalysisService = new ProjectAnalysisService();
     this.unrealMCPService = new UnrealMCPService();
+    const unrealAdapter = new UnrealMCPAdapter(this.unrealMCPService);
+    this.engineRegistry = new EngineRegistryService(unrealAdapter);
+
+    // Give the Godot adapter the correct path to the bundled gopeak CLI
+    const gopeakCli = app.isPackaged
+      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'gopeak', 'build', 'cli.js')
+      : path.join(process.cwd(), 'node_modules', 'gopeak', 'build', 'cli.js');
+    (this.engineRegistry.getAdapterFor('godot') as GodotMCPAdapter).setGopeakCliPath(gopeakCli);
   }
 
   async initialize(): Promise<void> {
@@ -92,6 +109,20 @@ class GorkaCopilotApp {
     // Load settings
     const settings = await this.storageService.getSettings();
     this.aiClient.configure(settings.aiProvider, settings.apiKey);
+
+    // Restore proxy session credentials from storage so AI calls work
+    // immediately after restart without requiring a fresh login.
+    if (authState.isLoggedIn && authState.email) {
+      const stored = await this.entitlementService.getProxyToken();
+      if (stored) {
+        this.aiClient.setProxyCredentials(stored.token, stored.expiresAt, authState.email);
+      }
+    }
+
+    // Set engine from persisted selection
+    const savedEngine = settings.selectedEngine ?? null;
+    this.engineRegistry.setEngine(savedEngine);
+    this.aiClient.setEngine(savedEngine);
 
     // Load hotkey config
     const hotkeyConfig = await this.storageService.getHotkeyConfig();
@@ -239,6 +270,10 @@ class GorkaCopilotApp {
       this.windowManager.setSettingsMode(false);
     });
 
+    ipcMain.on('window:enter-login', () => {
+      this.windowManager.setLoginMode(true);
+    });
+
     // UE Project Analysis handlers
     ipcMain.handle('project:browse', async () => {
       const { dialog } = await import('electron');
@@ -275,6 +310,24 @@ class GorkaCopilotApp {
             .sort()
             .reverse()[0]; // Highest version first
           if (ueDir) return join(base, ueDir);
+        } catch {
+          // Directory doesn't exist on this machine, try next
+        }
+      }
+      return null;
+    });
+
+    ipcMain.handle('ue:detect-uefn-path', async () => {
+      const { promises: fs } = await import('fs');
+      const { join } = await import('path');
+      const bases = process.platform === 'darwin'
+        ? ['/Users/Shared/Epic Games']
+        : ['C:\\Program Files\\Epic Games', 'C:\\Program Files (x86)\\Epic Games'];
+
+      for (const base of bases) {
+        try {
+          const entries = await fs.readdir(base);
+          if (entries.includes('UEFN')) return join(base, 'UEFN');
         } catch {
           // Directory doesn't exist on this machine, try next
         }
@@ -391,11 +444,33 @@ class GorkaCopilotApp {
       }
     });
 
+    // Fullscreen capture WITHOUT hiding the notch window (used by guided step verification)
+    ipcMain.handle('capture:fullscreen-no-hide', async () => {
+      try {
+        const windowBounds = mainWindow.getBounds();
+        const windowCenterX = windowBounds.x + windowBounds.width / 2;
+        const windowCenterY = windowBounds.y + windowBounds.height / 2;
+        const currentDisplay = screen.getDisplayNearestPoint({ x: windowCenterX, y: windowCenterY });
+        const result = await this.screenshotService.captureFullScreen(currentDisplay.id);
+        if (result) trackScreenCaptureTaken('fullscreen-no-hide');
+        return result;
+      } catch (error) {
+        console.error('[Screenshot] No-hide capture failed:', error);
+        return null;
+      }
+    });
+
     // Auth / Entitlement handlers
     ipcMain.handle('auth:login', async (_event, email: string) => {
       const state = await this.entitlementService.login(email);
       if (state.entitlement) {
         trackPlanIdentified(state.entitlement.active ? 'pro' : 'free', email);
+      }
+      // Wire fresh proxy token into the AI client so requests go through the
+      // backend proxy — no API key ever lives in the app bundle.
+      const proxyToken = await this.entitlementService.getProxyToken();
+      if (proxyToken) {
+        this.aiClient.setProxyCredentials(proxyToken.token, proxyToken.expiresAt, email);
       }
       return state;
     });
@@ -424,6 +499,10 @@ class GorkaCopilotApp {
       return this.entitlementService.checkEntitlement(email);
     });
 
+    ipcMain.handle('fairuse:get-state', async () => {
+      return this.storageService.getFairUseState();
+    });
+
     // Auto-updater handlers
     ipcMain.on('updater:install', () => {
       this.autoUpdaterService.installUpdate();
@@ -442,12 +521,46 @@ class GorkaCopilotApp {
           return;
         }
 
+        // Fair-use check (Pro users only; free users are handled by entitlement weekly limit)
+        const earlyTools = this.engineRegistry.getTools();
+        const earlyMcpConnected = this.engineRegistry.getStatus() === 'connected' && earlyTools.length > 0;
+        const fairUseType: 'rc' | 'chat' = (earlyMcpConnected && request.agentMode !== 'guide') ? 'rc' : 'chat';
+        const fairUse = await this.fairUseService.checkRequest(fairUseType);
+        if (!fairUse.allowed) {
+          const authStateForTimeout = await this.entitlementService.getAuthState();
+          const fairUseState = await this.storageService.getFairUseState();
+          trackFairUseTimeout({
+            requestType: fairUseType,
+            plan: authStateForTimeout.entitlement?.active ? 'pro' : 'free',
+            email: authStateForTimeout.email ?? null,
+            unlockedAt: fairUse.unlockedAt ?? 0,
+            violationCount: fairUseState.violations.length,
+          });
+          mainWindow.webContents.send('ai:error', {
+            message: fairUse.reason || 'Fair-use rate limit reached',
+            type: 'fair_use_timeout',
+            unlockedAt: fairUse.unlockedAt,
+          });
+          return;
+        }
+
         // Record the ask
         await this.entitlementService.recordAsk();
         trackFeatureUsed('ai_ask');
 
+        // Analytics setup — gather context before streaming, fire event after
+        const authState = await this.entitlementService.getAuthState();
+        const promptLengthChars = request.prompt.length;
+        const estimatedInputTokens = this.aiClient.estimateTokens(request.prompt);
+        let accumulatedResponse = '';
+        let activeModel = ACTIVE_AI_BACKEND === 'openrouter' ? 'google/gemini-2.5-flash'
+          : this.entitlementService.isPro() ? 'gpt-4o' : 'gpt-4o-mini';
+
         // Set model based on entitlement tier
-        if (!this.entitlementService.isPro()) {
+        if (ACTIVE_AI_BACKEND === 'gemini' || ACTIVE_AI_BACKEND === 'anthropic') {
+          // Both tiers use the same primary model; no override needed.
+          this.aiClient.setModelOverride(null);
+        } else if (!this.entitlementService.isPro()) {
           this.aiClient.setModelOverride('gpt-4o-mini');
         } else {
           this.aiClient.setModelOverride(null);
@@ -455,9 +568,7 @@ class GorkaCopilotApp {
 
         const context = request.context || this.webSocketServer.getCurrentContext();
 
-        // Inject UE project context. If the user has explicitly configured a project
-        // path, always inject it — they set it because they want it for all questions.
-        // Otherwise fall back to keyword-based detection (covers the live-connector case).
+        // Inject UE project context
         const currentSettings = await this.storageService.getSettings();
         let projectContext: string | undefined;
         const shouldInjectUEContext = currentSettings.ueProjectPath
@@ -469,28 +580,83 @@ class GorkaCopilotApp {
             await this.storageService.saveProjectAnalysis(freshAnalysis);
             projectContext = this.projectAnalysisService.generateContextText(freshAnalysis);
           } catch {
-            // Fall back to cached analysis if re-scan fails (e.g. path moved)
             const cachedAnalysis = await this.storageService.getProjectAnalysis();
             if (cachedAnalysis) {
               projectContext = this.projectAnalysisService.generateContextText(cachedAnalysis);
             }
           }
         } else if (shouldInjectUEContext) {
-          // No project path but connector provides context — use cached analysis if any
           const cachedAnalysis = await this.storageService.getProjectAnalysis();
           if (cachedAnalysis) {
             projectContext = this.projectAnalysisService.generateContextText(cachedAnalysis);
           }
         }
 
-        const fullRequest = { ...request, context, projectContext };
+        // When MCP is connected, use tool-calling flow so the AI can execute
+        // actions in the editor and observe results iteratively.
+        const mcpTools = this.engineRegistry.getTools();
+        const mcpConnected = this.engineRegistry.getStatus() === 'connected' && mcpTools.length > 0;
+        console.log(`[ai:ask] engine=${this.engineRegistry.getEngine()} mcpStatus=${this.engineRegistry.getStatus()} tools=${mcpTools.length} mcpConnected=${mcpConnected}`);
 
-        for await (const chunk of this.aiClient.ask(fullRequest)) {
-          mainWindow.webContents.send('ai:stream', chunk);
+        let editorSnapshot = '';
+        if (mcpConnected) {
+          editorSnapshot = await this.engineRegistry.getEditorSnapshot();
         }
 
-        // Send completion signal when streaming is done
+        const fullRequest = { ...request, context, projectContext, editorSnapshot };
+
+        // In guide mode, skip tool calling even when MCP is connected —
+        // the AI will explain steps for the user to follow manually.
+        const useTools = mcpConnected && request.agentMode !== 'guide';
+
+        if (useTools) {
+          if (ACTIVE_AI_BACKEND === 'openrouter') activeModel = 'minimax/minimax-m2.5';
+          const executeTool = async (name: string, args: Record<string, unknown>) => {
+            trackRemoteControlCommand(`mcp_tool_${name}`);
+            return this.engineRegistry.callTool(name, args);
+          };
+
+          try {
+            for await (const chunk of this.aiClient.askWithTools(fullRequest, mcpTools, executeTool)) {
+              accumulatedResponse += chunk;
+              mainWindow.webContents.send('ai:stream', chunk);
+            }
+          } catch (toolsError) {
+            // Tool-calling path failed (e.g. model/schema issue) — fall back to plain ask
+            console.error('[ai:ask] askWithTools failed, falling back to ask:', toolsError);
+            mainWindow.webContents.send('ai:stream', '');  // clear any partial stream
+            accumulatedResponse = '';
+            for await (const chunk of this.aiClient.ask(fullRequest)) {
+              accumulatedResponse += chunk;
+              mainWindow.webContents.send('ai:stream', chunk);
+            }
+          }
+        } else {
+          for await (const chunk of this.aiClient.ask(fullRequest)) {
+            accumulatedResponse += chunk;
+            mainWindow.webContents.send('ai:stream', chunk);
+          }
+        }
+
         mainWindow.webContents.send('ai:complete', { success: true });
+
+        // Fire analytics AFTER ai:complete — zero latency impact on the user
+        const requestType: 'chat' | 'rc' | 'guided' =
+          request.agentMode === 'guide' ? 'guided' : (useTools ? 'rc' : 'chat');
+        const estimatedOutputTokens = this.aiClient.estimateTokens(accumulatedResponse);
+        trackAIRequest({
+          requestType,
+          model: activeModel,
+          engineType: this.engineRegistry.getEngine() as string | null,
+          engineConnected: mcpConnected,
+          hadScreenshot: !!request.screenshot,
+          promptLengthChars,
+          estimatedInputTokens,
+          estimatedOutputTokens,
+          estimatedCostUsd: estimateCostUsd(activeModel, estimatedInputTokens, estimatedOutputTokens),
+          plan: authState.entitlement?.active ? 'pro' : 'free',
+          email: authState.email ?? null,
+        });
       } catch (error) {
         mainWindow.webContents.send('ai:error', {
           message: error instanceof Error ? error.message : 'Unknown error',
@@ -513,6 +679,53 @@ class GorkaCopilotApp {
 
     ipcMain.handle('storage:clear-sessions', async () => {
       await this.storageService.clearAllSessions();
+    });
+
+    // Thread handlers
+    ipcMain.handle('threads:save', async (_event, thread: ConversationThread) => {
+      await this.storageService.saveThread(thread);
+    });
+
+    ipcMain.handle('threads:get', async (_event, id: string) => {
+      return this.storageService.getThread(id);
+    });
+
+    ipcMain.handle('threads:list', async (_event, limit?: number) => {
+      return this.storageService.getThreads(limit);
+    });
+
+    ipcMain.handle('threads:delete', async (_event, id: string) => {
+      await this.storageService.deleteThread(id);
+    });
+
+    ipcMain.handle('threads:set-active', async (_event, id: string | null) => {
+      await this.storageService.setActiveThreadId(id);
+    });
+
+    ipcMain.handle('threads:get-active', async () => {
+      return this.storageService.getActiveThreadId();
+    });
+
+    // AI summarize handler
+    ipcMain.handle('ai:summarize', async (_event, params: { messages: Array<{ role: string; content: string }>; existingSummary?: string }) => {
+      return this.aiClient.summarizeConversation(params.messages, params.existingSummary);
+    });
+
+    // AI step verification handler
+    ipcMain.handle('ai:verify-step', async (_event, params: { stepText: string; screenshot: CaptureResult | null }) => {
+      if (!params.screenshot) return 'Looks good!';
+      return this.aiClient.verifyStep(params.stepText, params.screenshot);
+    });
+
+    // AI next step generation handler
+    ipcMain.handle('ai:generate-next-step', async (_event, params: { goal: string; currentStep: string; stepHistory: string[]; screenshot: CaptureResult | null }) => {
+      if (!params.screenshot) return { nextStep: null, isComplete: true, completionMessage: 'Task complete!' };
+      return this.aiClient.generateNextStep(params as { goal: string; currentStep: string; stepHistory: string[]; screenshot: CaptureResult });
+    });
+
+    // AI click target detection handler
+    ipcMain.handle('ai:generate-click-target', async (_event, params: { stepText: string; screenshot: CaptureResult }) => {
+      return this.aiClient.generateClickTarget(params.stepText, params.screenshot);
     });
 
     // Settings handlers
@@ -698,6 +911,9 @@ class GorkaCopilotApp {
 
     ipcMain.handle('unreal-mcp:start', async () => {
       const s = await this.storageService.getSettings();
+      if (!s.devMode && !this.entitlementService.isPro()) {
+        return { success: false, error: 'pro_required' };
+      }
       return this.unrealMCPService.start(s.unrealEnginePath ?? '', s.ueProjectPath ?? '');
     });
 
@@ -712,27 +928,211 @@ class GorkaCopilotApp {
       this.unrealMCPService.callTool(name, args)
     );
 
-    ipcMain.handle('unreal-mcp:execute-intent', async (
-      _e,
-      { conversationHistory, intent }: { conversationHistory: { role: string; content: string }[]; intent: string }
-    ) => {
-      try {
-        console.log('[MCP Intent] Generating Python script for:', intent.slice(0, 80));
-        const cameraInfo = await this.unrealMCPService.getViewportCameraInfo();
-        if (cameraInfo) {
-          console.log('[MCP Intent] Camera info fetched:', JSON.stringify(cameraInfo));
+    ipcMain.handle('unreal-mcp:get-tools', () => this.unrealMCPService.getTools());
+
+    ipcMain.handle('unreal:select-project-folder', async () => {
+      const { dialog } = await import('electron');
+      const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+      if (result.canceled || !result.filePaths[0]) return { canceled: true };
+      const projectPath = result.filePaths[0];
+      const s = await this.storageService.getSettings();
+      await this.storageService.setSettings({ ...s, ueProjectPath: projectPath });
+      return { projectPath };
+    });
+
+    // ===== Engine Selection =====
+    ipcMain.handle('engine:get-selected', () => this.engineRegistry.getEngine());
+
+    ipcMain.handle('engine:set-selected', async (_e, engine: SelectedEngine) => {
+      this.engineRegistry.setEngine(engine);
+      this.aiClient.setEngine(engine);
+      await this.storageService.updateSettings({ selectedEngine: engine });
+      mainWindow.webContents.send('engine:selected', engine);
+      return { success: true };
+    });
+
+    ipcMain.handle('engine:auto-detect', async () => {
+      const screenshot = await this.screenshotService.captureFullScreen();
+      return this.engineRegistry.autoDetectEngine(
+        screenshot,
+        (shot) => this.aiClient.detectEngine(shot)
+      );
+    });
+
+    ipcMain.handle('engine-mcp:get-status', () => this.engineRegistry.getStatus());
+
+    ipcMain.handle('engine-mcp:start', async () => {
+      const s = await this.storageService.getSettings();
+      if (!s.devMode && !this.entitlementService.isPro()) {
+        return { success: false, error: 'pro_required' };
+      }
+      // blender-mcp connects to Blender on port 9876 — same as Build Buddy's WebSocket.
+      // Stop the WebSocket server while Blender is active to free the port.
+      if (this.engineRegistry.getEngine() === 'blender') {
+        await this.webSocketServer.stop();
+      }
+      return this.engineRegistry.start(s);
+    });
+
+    ipcMain.handle('engine-mcp:stop', async () => {
+      await this.engineRegistry.stop();
+      // Restart the WebSocket server if it was stopped for Blender
+      if (this.engineRegistry.getEngine() === 'blender') {
+        await this.webSocketServer.start();
+      }
+      return { success: true };
+    });
+
+    ipcMain.handle('engine-mcp:call-tool', (_e, name: string, args: Record<string, unknown>) =>
+      this.engineRegistry.callTool(name, args)
+    );
+
+    ipcMain.handle('engine:check-setup', async (_e, engine: SelectedEngine) => {
+      if (engine === 'unreal') {
+        // Always show the onboarding card for Unreal — Remote Execution must be enabled
+        // manually in UE Editor and there's no file-based way to verify it's done.
+        return {
+          engine: 'unreal',
+          stepsComplete: false,
+          pendingSteps: [
+            { n: 1, title: 'Open Project Settings', desc: 'In Unreal Editor: Edit → Project Settings → Plugins → Python', isAutomatic: false },
+            { n: 2, title: 'Enable Remote Execution', desc: 'Check "Enable Remote Execution" and set Multicast Bind Address to 0.0.0.0', isAutomatic: false },
+            { n: 3, title: 'Set Engine Path', desc: 'Browse to your Unreal Engine installation folder (e.g. /Users/Shared/Epic Games/UE_5.4)', isAutomatic: false },
+          ],
+        };
+      }
+      return this.engineRegistry.checkSetup(engine);
+    });
+
+    ipcMain.handle('engine:install-deps', (_e, engine: SelectedEngine) =>
+      this.engineRegistry.installDeps(engine)
+    );
+
+    ipcMain.handle('engine:get-setup-steps', (_e, engine: SelectedEngine) =>
+      this.engineRegistry.getSetupSteps(engine)
+    );
+
+    ipcMain.handle('unity:setup-server', async () => {
+      const { dialog } = await import('electron');
+      const { existsSync, readdirSync } = await import('fs');
+      const { execSync } = await import('child_process');
+      const result = await dialog.showOpenDialog({
+        title: 'Select your Unity project folder',
+        buttonLabel: 'Select Project',
+        properties: ['openDirectory'],
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, canceled: true };
+      }
+      const projectPath = result.filePaths[0];
+
+      // Find Server~ directory in Library/PackageCache or Packages/
+      let serverDir: string | null = null;
+      const cacheDir = path.join(projectPath, 'Library', 'PackageCache');
+      if (existsSync(cacheDir)) {
+        const entries = readdirSync(cacheDir).filter(e =>
+          e.toLowerCase().includes('mcp-unity@') || e.toLowerCase().includes('mcp_unity@')
+        );
+        if (entries.length > 0) {
+          serverDir = path.join(cacheDir, entries[0], 'Server~');
         }
-        const script = await this.aiClient.requestUEPythonScript(conversationHistory, intent, undefined, cameraInfo ?? undefined);
-        console.log('[MCP Intent] Script generated, executing...');
-        const result = await this.unrealMCPService.callTool('editor_run_python', { code: script });
-        trackRemoteControlCommand('mcp_execute_intent');
-        const output = (result.data as any)?.content?.[0]?.text ?? '';
-        console.log('[MCP Intent] Execution result:', result.success, output.slice(0, 100));
-        return { success: result.success, script, output, error: result.error };
+      }
+      if (!serverDir || !existsSync(serverDir)) {
+        const localDir = path.join(projectPath, 'Packages', 'mcp-unity', 'Server~');
+        if (existsSync(localDir)) serverDir = localDir;
+      }
+      if (!serverDir || !existsSync(serverDir)) {
+        return { success: false, error: 'mcp-unity package not found in this Unity project. Make sure you installed it via Package Manager first.' };
+      }
+
+      // Build if needed
+      const builtPath = path.join(serverDir, 'build', 'index.js');
+      if (!existsSync(builtPath)) {
+        try {
+          execSync('npm install', { cwd: serverDir, timeout: 120000, stdio: 'ignore' });
+          execSync('npm run build', { cwd: serverDir, timeout: 60000, stdio: 'ignore' });
+        } catch (err) {
+          return { success: false, error: `Failed to build MCP server: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      }
+
+      await this.storageService.updateSettings({ unityProjectPath: projectPath });
+      return { success: true, projectPath, serverPath: builtPath };
+    });
+
+    ipcMain.handle('godot:install-addon', async () => {
+      const { dialog } = await import('electron');
+      const result = await dialog.showOpenDialog({
+        title: 'Select your Godot project folder',
+        buttonLabel: 'Select Project',
+        properties: ['openDirectory'],
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, canceled: true };
+      }
+      const projectPath = result.filePaths[0];
+      // In production the addon is bundled as an extraResource; in dev it's in node_modules
+      const addonSrc = app.isPackaged
+        ? path.join(process.resourcesPath, 'godot-addon')
+        : path.join(process.cwd(), 'node_modules', 'gopeak', 'build', 'addon');
+      const godotAdapter = this.engineRegistry.getAdapterFor('godot') as GodotMCPAdapter;
+      const installResult = godotAdapter.installAddonToProject(addonSrc, projectPath);
+      if (installResult.success) {
+        await this.storageService.updateSettings({ godotProjectPath: projectPath });
+      }
+      return { ...installResult, projectPath };
+    });
+
+    ipcMain.handle('blender:show-addon', async () => {
+      const { shell } = await import('electron');
+      const blenderAdapter = this.engineRegistry.getAdapterFor('blender') as BlenderMCPAdapter;
+      const addonPath = blenderAdapter.getAddonPath();
+      shell.showItemInFolder(addonPath);
+      return { addonPath };
+    });
+
+    ipcMain.handle('blender:install-addon', async () => {
+      const fsSync = await import('fs');
+      const { execSync: exec } = await import('child_process');
+      const blenderAdapter = this.engineRegistry.getAdapterFor('blender') as BlenderMCPAdapter;
+      const addonSrc = blenderAdapter.getAddonPath();
+
+      if (!fsSync.existsSync(addonSrc)) {
+        return { success: false, error: 'addon.py not downloaded yet. Please wait a moment and try again.' };
+      }
+
+      // Find Blender executable
+      const blenderCandidates = process.platform === 'darwin'
+        ? [
+            '/Applications/Blender.app/Contents/MacOS/Blender',
+            `${app.getPath('home')}/Applications/Blender.app/Contents/MacOS/Blender`,
+          ]
+        : process.platform === 'win32'
+          ? [
+              'C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe',
+              'C:\\Program Files\\Blender Foundation\\Blender 4.4\\blender.exe',
+              'C:\\Program Files\\Blender Foundation\\Blender 4.3\\blender.exe',
+              'C:\\Program Files\\Blender Foundation\\Blender 4.2\\blender.exe',
+            ]
+          : ['/usr/bin/blender', '/usr/local/bin/blender'];
+
+      const blenderExe = blenderCandidates.find(p => fsSync.existsSync(p));
+      if (!blenderExe) {
+        return { success: false, error: 'Could not find Blender. Make sure Blender is installed in the Applications folder.' };
+      }
+
+      // Use Blender's own installer — this handles sys.path and preferences correctly
+      const addonSrcEscaped = addonSrc.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const pythonScript = `import bpy; bpy.ops.preferences.addon_install(filepath='${addonSrcEscaped}', overwrite=True); bpy.ops.preferences.addon_enable(module='blender_mcp'); bpy.ops.wm.save_userpref()`;
+
+      try {
+        exec(`"${blenderExe}" --background --python-expr "${pythonScript.replace(/"/g, '\\"')}"`, {
+          timeout: 30000,
+          stdio: 'pipe',
+        });
+        return { success: true, versions: ['installed via Blender'] };
       } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        console.error('[MCP Intent] Error:', error);
-        return { success: false, script: '', output: '', error };
+        return { success: false, error: `Blender installer failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     });
   }
@@ -751,6 +1151,18 @@ class GorkaCopilotApp {
 
     this.unrealMCPService.onStatusChange((status) => {
       mainWindow.webContents.send('unreal-mcp:status', status);
+    });
+
+    this.engineRegistry.onStatusChange(async (status) => {
+      mainWindow.webContents.send('engine-mcp:status', status);
+      if (status === 'connected') {
+        const authState = await this.entitlementService.getAuthState();
+        trackEngineConnected({
+          engineType: this.engineRegistry.getEngine() as string,
+          plan: authState.entitlement?.active ? 'pro' : 'free',
+          email: authState.email ?? null,
+        });
+      }
     });
   }
 
