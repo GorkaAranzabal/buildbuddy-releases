@@ -96,6 +96,7 @@ export function LoginScreen({ onLogin, isLoading, error }: LoginScreenProps) {
   };
 
   const handleProPlan = () => {
+    window.electronAPI?.analytics?.track('upgrade_clicked', { source: 'login_screen' });
     // Open pricing page and switch to waiting step
     window.open('https://build-buddy.app/pricing', '_blank');
     setStep('waiting');
@@ -323,7 +324,10 @@ export function LoginScreen({ onLogin, isLoading, error }: LoginScreenProps) {
 
               {/* Re-open pricing link */}
               <button
-                onClick={() => window.open('https://build-buddy.app/pricing', '_blank')}
+                onClick={() => {
+                  window.electronAPI?.analytics?.track('upgrade_clicked', { source: 'login_screen' });
+                  window.open('https://build-buddy.app/pricing', '_blank');
+                }}
                 className="inline-flex items-center gap-1.5 text-blue-400 hover:text-blue-300 text-xs font-medium transition-all"
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

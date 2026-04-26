@@ -79,7 +79,7 @@ export class ScreenshotService {
     return sources[displayIndex] ?? sources[0];
   }
 
-  async captureFullScreen(targetDisplayId?: number): Promise<CaptureResult> {
+  async captureFullScreen(targetDisplayId?: number, sizeMultiplier = 1): Promise<CaptureResult> {
     // Get all displays and find the target
     const allDisplays = screen.getAllDisplays();
     let targetDisplay = screen.getPrimaryDisplay();
@@ -101,9 +101,9 @@ export class ScreenshotService {
     // This ensures coordinates in the screenshot match macOS coordinate system
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { 
-        width: displayBounds.width, 
-        height: displayBounds.height 
+      thumbnailSize: {
+        width: Math.round(displayBounds.width * sizeMultiplier),
+        height: Math.round(displayBounds.height * sizeMultiplier),
       },
     });
     console.log(`Requested thumbnail at ${displayBounds.width}x${displayBounds.height}`);
@@ -154,11 +154,25 @@ export class ScreenshotService {
       throw new Error('All screen thumbnails are empty');
     }
 
+    // Cap longest edge at 1280px — matches Clicky's approach and keeps Computer Use
+    // payloads small on any display (4K native, Retina, etc.). Ratio math still works
+    // because we update `dimensions` from the final image size, not displayBounds.
+    const MAX_EDGE = 1280;
+    const rawSize = thumbnail.getSize();
+    let finalThumb = thumbnail;
+    if (rawSize.width >= rawSize.height && rawSize.width > MAX_EDGE) {
+      finalThumb = thumbnail.resize({ width: MAX_EDGE });
+      console.log(`Screenshot resized from ${rawSize.width}x${rawSize.height} to ${finalThumb.getSize().width}x${finalThumb.getSize().height} for AI`);
+    } else if (rawSize.height > rawSize.width && rawSize.height > MAX_EDGE) {
+      finalThumb = thumbnail.resize({ height: MAX_EDGE });
+      console.log(`Screenshot resized from ${rawSize.width}x${rawSize.height} to ${finalThumb.getSize().width}x${finalThumb.getSize().height} for AI`);
+    }
+
     const id = uuidv4();
     const imagePath = path.join(this.tempDir, `${id}.png`);
-    const pngData = thumbnail.toPNG();
-    
-    console.log(`Screenshot captured: ${pngData.length} bytes, ${thumbnail.getSize().width}x${thumbnail.getSize().height}`);
+    const pngData = finalThumb.toPNG();
+
+    console.log(`Screenshot captured: ${pngData.length} bytes, ${finalThumb.getSize().width}x${finalThumb.getSize().height}`);
     fs.writeFileSync(imagePath, pngData);
 
     return {
@@ -168,8 +182,8 @@ export class ScreenshotService {
       imagePath,
       imageBase64: pngData.toString('base64'),
       dimensions: {
-        width: thumbnail.getSize().width,
-        height: thumbnail.getSize().height,
+        width: finalThumb.getSize().width,
+        height: finalThumb.getSize().height,
       },
       displayBounds: {
         x: displayBounds.x,

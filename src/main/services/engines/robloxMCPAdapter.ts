@@ -47,7 +47,7 @@ const SETUP_STEPS: EngineSetupStep[] = [
 
 export class RobloxMCPAdapter implements IEngineMCPService {
   private status: EngineMCPStatus = 'disconnected';
-  private statusCallbacks: Array<(s: EngineMCPStatus) => void> = [];
+  private statusCallbacks: Array<(s: EngineMCPStatus, error?: string) => void> = [];
   private process: ChildProcess | null = null;
   private tools: MCPToolDefinition[] = [];
   private binaryDir: string;
@@ -66,7 +66,7 @@ export class RobloxMCPAdapter implements IEngineMCPService {
 
   getStatus(): EngineMCPStatus { return this.status; }
 
-  onStatusChange(cb: (status: EngineMCPStatus) => void): void {
+  onStatusChange(cb: (status: EngineMCPStatus, error?: string) => void): void {
     this.statusCallbacks.push(cb);
   }
 

@@ -20,7 +20,7 @@ import type {
 export class EngineRegistryService {
   private adapters: Map<NonNullable<SelectedEngine>, IEngineMCPService>;
   private currentEngine: SelectedEngine = null;
-  private statusCallbacks: Array<(status: EngineMCPStatus) => void> = [];
+  private statusCallbacks: Array<(status: EngineMCPStatus, error?: string) => void> = [];
 
   constructor(unrealAdapter: UnrealMCPAdapter) {
     this.adapters = new Map([
@@ -34,9 +34,9 @@ export class EngineRegistryService {
 
     // Wire status callbacks through for all adapters (only propagate when active)
     for (const [engine, adapter] of this.adapters) {
-      adapter.onStatusChange((status) => {
+      adapter.onStatusChange((status, error) => {
         if (this.currentEngine === engine) {
-          for (const cb of this.statusCallbacks) cb(status);
+          for (const cb of this.statusCallbacks) cb(status, error);
         }
       });
     }
@@ -60,7 +60,7 @@ export class EngineRegistryService {
     return this.adapters.get(engine) ?? null;
   }
 
-  onStatusChange(cb: (status: EngineMCPStatus) => void): void {
+  onStatusChange(cb: (status: EngineMCPStatus, error?: string) => void): void {
     this.statusCallbacks.push(cb);
   }
 

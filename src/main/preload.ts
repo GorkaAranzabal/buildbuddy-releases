@@ -7,12 +7,22 @@ const electronAPI = {
   window: {
     toggle: () => ipcRenderer.send('window:toggle'),
     collapse: (collapsed) => ipcRenderer.send('window:collapse', collapsed),
+    onCollapsedChanged: (callback) => {
+      const subscription = (_event, collapsed) => callback(collapsed);
+      ipcRenderer.on('window:collapsed-changed', subscription);
+      return () => ipcRenderer.removeListener('window:collapsed-changed', subscription);
+    },
+    restoreOpacity: () => ipcRenderer.send('window:restore-opacity'),
     pin: (pinned) => ipcRenderer.send('window:pin', pinned),
     getState: () => ipcRenderer.invoke('window:get-state'),
     growForConversation: () => ipcRenderer.send('window:grow-for-conversation'),
+    setFocusable: (value) => ipcRenderer.send('window:set-focusable', value),
     enterSettings: () => ipcRenderer.send('window:enter-settings'),
     exitSettings: () => ipcRenderer.send('window:exit-settings'),
+    resizeSettings: (width, height) => ipcRenderer.send('window:resize-settings', { width, height }),
     enterLogin: () => ipcRenderer.send('window:enter-login'),
+    enterVideoMode: () => ipcRenderer.send('window:enter-video-mode'),
+    exitVideoMode: () => ipcRenderer.send('window:exit-video-mode'),
   },
 
   // Vignette overlay (full-screen AI thinking effect)
@@ -21,11 +31,24 @@ const electronAPI = {
     hide: () => ipcRenderer.send('vignette:hide'),
   },
 
+  // Paste-hint overlay (Blueprints Library Ctrl/Cmd+V prompt)
+  pasteHint: {
+    show: (durationMs) => ipcRenderer.send('paste-hint:show', durationMs),
+    hide: () => ipcRenderer.send('paste-hint:hide'),
+  },
+
+  // Virtual cursor overlay (guided steps pointer)
+  cursor: {
+    show: (params) => ipcRenderer.invoke('cursor:show', params),
+    hide: () => ipcRenderer.invoke('cursor:hide'),
+  },
+
   // Screenshot capture
   capture: {
     fullscreen: () => ipcRenderer.send('capture:fullscreen'),
     fullscreenSync: () => ipcRenderer.invoke('capture:fullscreen-sync'),
     fullscreenNoHide: () => ipcRenderer.invoke('capture:fullscreen-no-hide'),
+    fullscreenHiRes: () => ipcRenderer.invoke('capture:fullscreen-hires'),
     window: (windowId) => ipcRenderer.send('capture:window', windowId),
     region: () => ipcRenderer.send('capture:region'),
     getWindows: () => ipcRenderer.invoke('capture:get-windows'),
@@ -41,6 +64,11 @@ const electronAPI = {
     },
   },
 
+  // YouTube transcript helper
+  youtube: {
+    fetchTranscript: (videoId) => ipcRenderer.invoke('youtube:fetch-transcript', videoId),
+  },
+
   // AI assistant
   ai: {
     ask: (request) => ipcRenderer.send('ai:ask', request),
@@ -48,6 +76,8 @@ const electronAPI = {
     verifyStep: (params) => ipcRenderer.invoke('ai:verify-step', params),
     generateNextStep: (params) => ipcRenderer.invoke('ai:generate-next-step', params),
     generateClickTarget: (params) => ipcRenderer.invoke('ai:generate-click-target', params),
+    generateStepsFromTranscript: (params) => ipcRenderer.invoke('ai:generate-steps-from-transcript', params),
+    transcribeAudio: (params) => ipcRenderer.invoke('ai:transcribe-audio', params),
     onStream: (callback) => {
       const subscription = (_event, chunk) => callback(chunk);
       ipcRenderer.on('ai:stream', subscription);
@@ -150,11 +180,23 @@ const electronAPI = {
     },
   },
 
+  // Analytics relay — renderer-side events. Only whitelisted events in main land.
+  analytics: {
+    track: (event, properties) => ipcRenderer.send('analytics:track', { event, properties }),
+  },
+
   // Focus input (triggered by hotkey)
   onFocusInput: (callback) => {
     const subscription = () => callback();
     ipcRenderer.on('focus-input', subscription);
     return () => ipcRenderer.removeListener('focus-input', subscription);
+  },
+
+  // Start voice input (triggered by hotkey)
+  onStartVoice: (callback) => {
+    const subscription = () => callback();
+    ipcRenderer.on('start-voice', subscription);
+    return () => ipcRenderer.removeListener('start-voice', subscription);
   },
 
   // Agent automation
@@ -238,6 +280,7 @@ const electronAPI = {
   // Unreal-specific helpers
   unreal: {
     selectProjectFolder: () => ipcRenderer.invoke('unreal:select-project-folder'),
+    focusEditor: () => ipcRenderer.invoke('unreal:focus-editor'),
   },
 
   // Godot-specific helpers
@@ -261,14 +304,32 @@ const electronAPI = {
     getState: () => ipcRenderer.invoke('fairuse:get-state'),
   },
 
+  // Clipboard (fallback when navigator.clipboard fails — e.g. overlay not focused)
+  clipboard: {
+    writeText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
+  },
+
+  // Debug — temporary, for copying recent console logs to clipboard
+  debug: {
+    copyLogs: () => ipcRenderer.invoke('debug:copy-logs'),
+  },
+
   // Engine-agnostic MCP
   engineMcp: {
     getStatus: () => ipcRenderer.invoke('engine-mcp:get-status'),
     start: () => ipcRenderer.invoke('engine-mcp:start'),
     stop: () => ipcRenderer.invoke('engine-mcp:stop'),
     callTool: (name, args) => ipcRenderer.invoke('engine-mcp:call-tool', name, args),
+    openLog: () => ipcRenderer.invoke('engine-mcp:open-log'),
     onStatusChange: (callback) => {
-      const handler = (_event, status) => callback(status);
+      const handler = (_event, payload) => {
+        // Backwards-compat: payload was the bare status string before {status, error}.
+        if (payload && typeof payload === 'object' && 'status' in payload) {
+          callback(payload.status, payload.error);
+        } else {
+          callback(payload);
+        }
+      };
       ipcRenderer.on('engine-mcp:status', handler);
       return () => ipcRenderer.removeListener('engine-mcp:status', handler);
     },

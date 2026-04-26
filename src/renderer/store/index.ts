@@ -96,6 +96,7 @@ interface AppState {
   // Engine Selection
   selectedEngine: SelectedEngine;
   engineMCPStatus: EngineMCPStatus;
+  engineMCPError: string | null;
   engineSetupStatus: EngineSetupStatus | null;
   isEngineSetupOpen: boolean;
 
@@ -107,6 +108,8 @@ interface AppState {
   guidedModePending: boolean;
   guidedGoal: string | null;
   guidedIsComplete: boolean;
+  guidedVideoUrl: string | null;
+  guidedStepTimestamps: number[] | null;
 
   // Actions - UI
   setCollapsed: (collapsed: boolean) => void;
@@ -155,7 +158,7 @@ interface AppState {
 
   // Actions - Engine Selection
   setSelectedEngine: (engine: SelectedEngine) => void;
-  setEngineMCPStatus: (status: EngineMCPStatus) => void;
+  setEngineMCPStatus: (status: EngineMCPStatus, error?: string | null) => void;
   setEngineSetupStatus: (status: EngineSetupStatus | null) => void;
   setEngineSetupOpen: (open: boolean) => void;
 
@@ -163,8 +166,12 @@ interface AppState {
   agentMode: 'guide' | 'action';
   setAgentMode: (mode: 'guide' | 'action') => void;
 
+  // Auto-update error state (set when download/install fails — gates chat send)
+  updateError: string | null;
+  setUpdateError: (message: string | null) => void;
+
   // Actions - Guided Step Mode
-  enterGuidedMode: (steps: string[], sourceMessageId: string, goal?: string) => void;
+  enterGuidedMode: (steps: string[], sourceMessageId: string, goal?: string, videoUrl?: string, timestamps?: number[]) => void;
   exitGuidedMode: () => void;
   setGuidedStep: (step: number) => void;
   setGuidedVerification: (text: string | null) => void;
@@ -218,11 +225,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Initial Engine Selection
   selectedEngine: null,
   engineMCPStatus: 'disconnected',
+  engineMCPError: null,
   engineSetupStatus: null,
   isEngineSetupOpen: false,
 
   // Agent Mode
   agentMode: 'action',
+
+  // Update error
+  updateError: null,
 
   // Initial Guided Step Mode
   guidedSteps: null,
@@ -232,6 +243,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   guidedModePending: false,
   guidedGoal: null,
   guidedIsComplete: false,
+  guidedVideoUrl: null,
+  guidedStepTimestamps: null,
 
   // UI Actions
   setCollapsed: (collapsed) => set({ isCollapsed: collapsed }),
@@ -333,6 +346,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       guidedModePending: false,
       guidedGoal: null,
       guidedIsComplete: false,
+      guidedVideoUrl: null,
+      guidedStepTimestamps: null,
     });
     window.electronAPI?.threads?.setActive(newId);
   },
@@ -371,6 +386,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       guidedModePending: false,
       guidedGoal: null,
       guidedIsComplete: false,
+      guidedVideoUrl: null,
+      guidedStepTimestamps: null,
     });
     window.electronAPI?.threads?.setActive(newId);
   },
@@ -431,33 +448,44 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Agent Mode Actions
   setAgentMode: (mode) => set({ agentMode: mode }),
 
+  setUpdateError: (message) => set({ updateError: message }),
+
   // Engine Selection Actions
   setSelectedEngine: (engine) => set({ selectedEngine: engine }),
-  setEngineMCPStatus: (status) => set({ engineMCPStatus: status }),
+  setEngineMCPStatus: (status, error) =>
+    set({
+      engineMCPStatus: status,
+      // Clear stored error on transitions away from error; preserve on error.
+      engineMCPError: status === 'error' ? (error ?? null) : null,
+    }),
   setEngineSetupStatus: (status) => set({ engineSetupStatus: status }),
   setEngineSetupOpen: (open) => set({ isEngineSetupOpen: open }),
 
   // Guided Step Mode Actions
-  enterGuidedMode: (steps, sourceMessageId, goal) =>
+  enterGuidedMode: (steps, sourceMessageId, goal, videoUrl, timestamps) =>
     set({
-      guidedSteps: [steps[0]],
+      guidedSteps: videoUrl ? steps : [steps[0]], // all steps upfront in video mode
+      guidedStepTimestamps: timestamps ?? null,
       guidedCurrentStep: 0,
       guidedVerification: null,
       guidedSourceMessageId: sourceMessageId,
       guidedModePending: false,
       guidedGoal: goal ?? null,
       guidedIsComplete: false,
+      guidedVideoUrl: videoUrl ?? null,
     }),
 
   exitGuidedMode: () =>
     set({
       guidedSteps: null,
+      guidedStepTimestamps: null,
       guidedCurrentStep: 0,
       guidedVerification: null,
       guidedSourceMessageId: null,
       guidedModePending: false,
       guidedGoal: null,
       guidedIsComplete: false,
+      guidedVideoUrl: null,
     }),
 
   setGuidedStep: (step) => set({ guidedCurrentStep: step, guidedVerification: null }),

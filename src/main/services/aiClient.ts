@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import { nativeImage } from 'electron';
 import type {
   AIProvider,
   AIRequest,
@@ -14,6 +15,8 @@ import type {
   MCPToolResult,
   SelectedEngine,
 } from '../../shared/types';
+import blueprintSnippets from '../../shared/blueprints/snippets.json';
+import type { BlueprintSnippet } from '../../shared/blueprints/types';
 
 // Dev-only fallback keys. In production builds these are empty strings — the app
 // routes AI calls through the backend proxy (build-buddy.app/api/ai/chat) instead
@@ -46,6 +49,12 @@ const CHEAP_MODEL   = ACTIVE_AI_BACKEND === 'gemini' ? 'gemini-2.5-flash'
 const ANTHROPIC_TOOLS_MODEL = 'claude-sonnet-4-6';
 // OpenRouter model ID for tool-calling.
 const OPENROUTER_TOOLS_MODEL = 'minimax/minimax-m2.5';
+// Model used for cursor positioning (Computer Use + vision fallback).
+// Fallback vision model if Gemini Computer Use is unavailable
+const CURSOR_VISION_MODEL = ACTIVE_AI_BACKEND === 'gemini' ? 'gemini-2.5-flash'
+  : ACTIVE_AI_BACKEND === 'anthropic' ? 'claude-haiku-4-5-20251001'
+  : ACTIVE_AI_BACKEND === 'openrouter' ? 'anthropic/claude-sonnet-4-6'
+  : 'gpt-4o-mini';
 // Models that do not support vision/image inputs — screenshot is stripped before sending.
 const TEXT_ONLY_MODELS = new Set(['minimax/minimax-m2.5', 'minimax/minimax-m2.5:free']);
 
@@ -333,8 +342,91 @@ The user has switched you to "Guide" mode. You are a teacher, not an executor.
 - Explain WHY each step is done so the user learns the process.
 - Be concise but educational.`;
 
+const NO_MCP_ADDENDUM = `
+
+UNREAL MCP NOT CONNECTED:
+The user is NOT currently connected to the Unreal Engine MCP, so Build Buddy cannot execute anything in their editor.
+- Do NOT emit Python, T3D/blueprint text, or any other "paste this into Unreal" code block. Copy-pasting Python into the Output Log is too hard for most users and we do not want to offer it.
+- If the user's request requires editor changes, explain conceptually what needs to happen, then tell them to connect the Unreal MCP from the engine picker so Build Buddy can do it for them.
+- You may still discuss UE concepts, debug problems, and talk through designs in prose. Just no executable code.`;
+
+function buildBlueprintCatalogSection(): string {
+  const snippets = blueprintSnippets as BlueprintSnippet[];
+  if (snippets.length === 0) return '';
+  const lines = snippets.map((s) => {
+    const paramsPart =
+      Array.isArray(s.parameters) && s.parameters.length > 0
+        ? ` — params: ${s.parameters.map((p) => `${p.name}=${p.default}`).join(', ')}`
+        : '';
+    const descPart = s.description ? ` — ${s.description}` : '';
+    return `- ${s.id}: ${s.title} (${s.target_blueprint})${paramsPart}${descPart}`;
+  });
+  return `
+
+BLUEPRINT SNIPPET CATALOG:
+When the user asks for a Blueprint BEHAVIOR ("make the character jump on space", "print 'boom' on begin play", "quit on H", etc.), pick one of three tiers in order.
+
+Available library snippets:
+${lines.join('\n')}
+
+**Tiering — try in order:**
+1. **Exact match** — an unmodified snippet covers the ask → compose_blueprint({ snippet_ids: [id] }).
+2. **Parameter override** — a snippet matches if you change a key/message/value shown in "params:" above → compose_blueprint({ snippet_ids: [id], params: { [id]: { paramName: "NewValue" } } }). Example: "quit on H" → compose_blueprint({ snippet_ids: ["quit-on-escape"], params: { "quit-on-escape": { "key": "H" } } }).
+3. **Freeform (build_blueprint_freeform)** — this is NOT a last resort. It is the normal path whenever Tiers 1 and 2 don't fit exactly. If you find yourself about to say "the library doesn't have a snippet for this" or "you'll need to manually add X" — STOP. That's your cue to call build_blueprint_freeform with the missing behavior baked in. DO NOT call compose_blueprint as an approximation and tell the user to finish it by hand — that defeats the purpose of the 3-tier system.
+
+Rules for compose_blueprint:
+- Only use IDs from the list above — never invent new IDs.
+- Only use parameter NAMES listed for that snippet — never invent new parameter names.
+- **Match by semantics, not by title.** Read each snippet's description before picking it. If the description does something semantically different from the user's ask — even if the title sounds similar — DO NOT pick it. Example: "destroy the actor on any damage" does NOT match 'die-on-any-damage' (that snippet SETS A FLAG and prints; it never calls DestroyActor). Escalate to Tier 3 instead.
+- Parameter overrides can ONLY change the listed parameters (keys, messages, numeric values). They CANNOT change which function a node calls, add new nodes, or swap a SetVariable for a DestroyActor. If the fix requires a different node type, go to Tier 3.
+- Prefer a single snippet. Combine multiple only when the user's request genuinely spans separate behaviors.
+- compose_blueprint writes T3D to the clipboard, creates variables, and shows a paste-hint overlay. After success, tell the user to click Unreal's event graph and press Cmd/Ctrl+V.
+- compose_blueprint places snippets side-by-side (no auto-wiring between them). Mention this if the user expects chaining.
+
+## Tier 3 — build_blueprint_freeform
+
+Use this whenever no snippet + param combo covers the ask exactly. It is NOT a last resort — it's the standard way to generate any behavior the library doesn't already ship.
+
+**Concrete examples that MUST use Tier 3:**
+- "Destroy this actor when it takes any damage" → trigger: ReceiveAnyDamage, actions: [{ kind: "call_function", function_ref: "Actor.K2_DestroyActor" }]. (do NOT use die-on-any-damage — it sets a flag, it does NOT destroy)
+- "Print 'hello' every tick" → trigger: ReceiveTick, actions: [{ kind: "print", message: "hello" }].
+- "When I press Q, print 'Bye' and then quit the game" → trigger: input_key Q, actions: [{ kind: "print", message: "Bye" }, { kind: "call_function", function_ref: "KismetSystemLibrary.QuitGame" }].
+- "Destroy the actor on begin play" → trigger: ReceiveBeginPlay, actions: [{ kind: "call_function", function_ref: "Actor.K2_DestroyActor" }].
+
+build_blueprint_freeform({ intent: { target_blueprint, variables?, trigger, actions } })
+
+Trigger schema (pick ONE):
+  { "kind": "input_key",    "key": "H",      "phase": "Pressed" | "Released" (optional, default Pressed) }
+  { "kind": "input_action", "action": "Jump", "phase": "Pressed" | "Released" (optional) }
+  { "kind": "event",        "event": "ReceiveBeginPlay" | "ReceiveTick" | "ReceiveActorBeginOverlap" | "ReceiveAnyDamage" }
+
+Actions (a linear exec chain):
+  { "kind": "print",         "message": "..." }
+  { "kind": "call_function", "function_ref": "<whitelist id>" }
+  { "kind": "set_variable",  "name": "Health", "literal": "100.0" }
+
+Function whitelist (exact strings — anything else is rejected):
+  - GameplayStatics.SetGamePaused
+  - KismetSystemLibrary.PrintString
+  - KismetSystemLibrary.QuitGame
+  - Character.Jump
+  - Character.StopJumping
+  - Character.Crouch
+  - Character.UnCrouch
+  - Actor.K2_DestroyActor
+  - PlayerController.SetShowMouseCursor
+
+variables (optional): [{ "name": "Health", "type": "float" | "int" | "bool" | "string", "default_value": "100.0" }]
+
+Rules for build_blueprint_freeform:
+- Linear exec chain only — v1 does NOT support branching, flipflop, or math nodes. If the ask needs those, explain that plainly and point the user to the Library tab. Do NOT call the tool.
+- For "quit on key X" style asks: ALWAYS prefer Tier 2 (compose_blueprint with params) — don't use Tier 3 for things a parameterized snippet covers.
+- Target-pin wiring for component functions (e.g. SetShowMouseCursor, SetGamePaused on specific actors) is manual — tell the user they'll see an unwired pin and need to connect it.
+- If the user's ask requires a function NOT on the whitelist, say so plainly. Do NOT fabricate.`;
+}
+
 function buildToolCallingAddendum(engine: SelectedEngine): string {
-  if (!engine || engine === 'unreal') return TOOL_CALLING_ADDENDUM_UE5;
+  if (!engine || engine === 'unreal') return TOOL_CALLING_ADDENDUM_UE5 + buildBlueprintCatalogSection();
 
   const cfg = ENGINE_CONFIGS[engine];
   return `
@@ -411,6 +503,8 @@ export class AIClientService {
   private proxyToken: string | null = null;
   private proxyTokenExpiresAt = 0;
   private proxyUserEmail = '';
+  // Optional callback to auto-refresh the proxy token when it expires.
+  private proxyRefreshFn: ((email: string) => Promise<{ token: string; expiresAt: number }>) | null = null;
 
   // Context limits
   private readonly MAX_LOG_LINES = 200;
@@ -431,11 +525,26 @@ export class AIClientService {
     this.proxyUserEmail = email;
   }
 
-  private getValidProxyToken(): string {
-    if (!this.proxyToken || Date.now() >= this.proxyTokenExpiresAt - 60_000) {
-      throw new Error('Proxy session expired. Please log in again.');
+  setProxyRefreshCallback(fn: (email: string) => Promise<{ token: string; expiresAt: number }>): void {
+    this.proxyRefreshFn = fn;
+  }
+
+  private async getValidProxyToken(): Promise<string> {
+    const isExpired = !this.proxyToken || Date.now() >= this.proxyTokenExpiresAt - 60_000;
+    if (isExpired) {
+      if (this.proxyRefreshFn && this.proxyUserEmail) {
+        try {
+          const fresh = await this.proxyRefreshFn(this.proxyUserEmail);
+          this.proxyToken = fresh.token;
+          this.proxyTokenExpiresAt = fresh.expiresAt;
+        } catch {
+          throw new Error('Proxy session expired. Please log in again.');
+        }
+      } else {
+        throw new Error('Proxy session expired. Please log in again.');
+      }
     }
-    return this.proxyToken;
+    return this.proxyToken!;
   }
 
   // Streams an OpenAI-compatible SSE response from the backend proxy.
@@ -447,7 +556,7 @@ export class AIClientService {
     tools?: OpenAI.ChatCompletionTool[],
     maxTokens = 8192,
   ): AsyncGenerator<OpenAI.Chat.Completions.ChatCompletionChunk> {
-    const token = this.getValidProxyToken();
+    const token = await this.getValidProxyToken();
     const body: Record<string, unknown> = { model, messages, stream: true, max_tokens: maxTokens };
     if (tools?.length) body.tools = tools;
 
@@ -461,12 +570,31 @@ export class AIClientService {
       body: JSON.stringify(body),
     });
 
-    if (!response.ok) {
+    let activeResponse = response;
+    if (response.status === 401 && this.proxyRefreshFn && this.proxyUserEmail) {
+      // Token rejected server-side — force a refresh and retry once
+      const fresh = await this.proxyRefreshFn(this.proxyUserEmail);
+      this.proxyToken = fresh.token;
+      this.proxyTokenExpiresAt = fresh.expiresAt;
+      activeResponse = await fetch(PROXY_BASE_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${fresh.token}`,
+          'X-User-Email': this.proxyUserEmail,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!activeResponse.ok) {
+        const errText = await activeResponse.text().catch(() => activeResponse.statusText);
+        throw new Error(`AI proxy error ${activeResponse.status}: ${errText}`);
+      }
+    } else if (!response.ok) {
       const errText = await response.text().catch(() => response.statusText);
       throw new Error(`AI proxy error ${response.status}: ${errText}`);
     }
 
-    const reader = response.body!.getReader();
+    const reader = activeResponse.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
 
@@ -495,7 +623,7 @@ export class AIClientService {
     model: string,
     maxTokens = 600,
   ): Promise<string> {
-    const token = this.getValidProxyToken();
+    const token = await this.getValidProxyToken();
     const response = await fetch(PROXY_BASE_URL, {
       method: 'POST',
       headers: {
@@ -506,12 +634,31 @@ export class AIClientService {
       body: JSON.stringify({ model, messages, stream: false, max_tokens: maxTokens }),
     });
 
-    if (!response.ok) {
+    let activeResponse = response;
+    if (response.status === 401 && this.proxyRefreshFn && this.proxyUserEmail) {
+      // Token rejected server-side — force a refresh and retry once
+      const fresh = await this.proxyRefreshFn(this.proxyUserEmail);
+      this.proxyToken = fresh.token;
+      this.proxyTokenExpiresAt = fresh.expiresAt;
+      activeResponse = await fetch(PROXY_BASE_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${fresh.token}`,
+          'X-User-Email': this.proxyUserEmail,
+        },
+        body: JSON.stringify({ model, messages, stream: false, max_tokens: maxTokens }),
+      });
+      if (!activeResponse.ok) {
+        const errText = await activeResponse.text().catch(() => activeResponse.statusText);
+        throw new Error(`AI proxy error ${activeResponse.status}: ${errText}`);
+      }
+    } else if (!response.ok) {
       const errText = await response.text().catch(() => response.statusText);
       throw new Error(`AI proxy error ${response.status}: ${errText}`);
     }
 
-    const data = (await response.json()) as { choices: Array<{ message: { content: string } }> };
+    const data = (await activeResponse.json()) as { choices: Array<{ message: { content: string } }> };
     return data.choices[0]?.message?.content?.trim() ?? '';
   }
 
@@ -626,7 +773,7 @@ export class AIClientService {
   }
 
   async *ask(request: AIRequest): AsyncGenerator<string, AIResponse> {
-    const { prompt, context, screenshot, mode, agentMode, conversationHistory, memorySummary, projectContext } = request;
+    const { prompt, context, screenshot, mode, agentMode, conversationHistory, memorySummary, projectContext, mcpConnected } = request;
 
     // Prepare context
     const contextText = this.prepareContext(context);
@@ -634,7 +781,10 @@ export class AIClientService {
     // Build messages
     const userContent = this.buildUserContent(prompt, contextText, screenshot, mode, projectContext);
 
-    const systemAddendum = agentMode === 'guide' ? GUIDE_MODE_ADDENDUM : undefined;
+    const addendumParts: string[] = [];
+    if (agentMode === 'guide') addendumParts.push(GUIDE_MODE_ADDENDUM);
+    if (this.selectedEngine === 'unreal' && mcpConnected === false) addendumParts.push(NO_MCP_ADDENDUM);
+    const systemAddendum = addendumParts.length > 0 ? addendumParts.join('\n') : undefined;
 
     if (this.provider === 'openai' && (this.openai || this.useProxy)) {
       yield* this.askOpenAI(userContent, screenshot, conversationHistory, memorySummary, systemAddendum);
@@ -1206,9 +1356,10 @@ export class AIClientService {
       parts.push('');
     }
 
-    // Add runtime context from UE
+    // Add runtime context from the active editor
     if (contextText) {
-      parts.push('Context from Unreal Engine:');
+      const engineName = ENGINE_CONFIGS[this.selectedEngine ?? 'unreal']?.name ?? 'Editor';
+      parts.push(`Context from ${engineName}:`);
       parts.push(contextText);
     }
 
@@ -1225,6 +1376,32 @@ export class AIClientService {
   estimateTokens(text: string): number {
     // Rough estimate: ~4 characters per token for English text
     return Math.ceil(text.length / 4);
+  }
+
+  // ===== Audio Transcription =====
+
+  async transcribeAudio(audioBase64: string, mimeType: string): Promise<string> {
+    if (!this.openai && !this.useProxy) throw new Error('AI client not initialized');
+
+    const messages: any[] = [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Transcribe this audio exactly as spoken. Output only the transcript, no commentary.' },
+        { type: 'image_url', image_url: { url: `data:${mimeType};base64,${audioBase64}` } },
+      ],
+    }];
+
+    if (this.useProxy && !this.openai) {
+      return await this.callProxyNonStreaming(messages, PRIMARY_MODEL, 500);
+    }
+
+    const response = await (this.openai!.chat.completions.create as any)({
+      model: PRIMARY_MODEL,
+      messages,
+      max_tokens: 500,
+    });
+
+    return response.choices[0]?.message?.content?.trim() ?? '';
   }
 
   // ===== Conversation Summarization =====
@@ -1335,12 +1512,15 @@ Output ONLY the summary text, no headers or formatting.`;
 
   // ===== Next Step Generation =====
 
-  async generateNextStep(params: {
-    goal: string;
-    currentStep: string;
-    stepHistory: string[];
-    screenshot: CaptureResult;
-  }): Promise<{ nextStep: string | null; isComplete: boolean; completionMessage?: string }> {
+  async generateNextStep(
+    params: {
+      goal: string;
+      currentStep: string;
+      stepHistory: string[];
+      screenshot: CaptureResult;
+    },
+    onStepTextReady?: (stepText: string) => void,
+  ): Promise<{ nextStep: string | null; isComplete: boolean; completionMessage?: string }> {
     const { goal, currentStep, stepHistory, screenshot } = params;
 
     const systemPrompt =
@@ -1373,7 +1553,7 @@ Output ONLY the summary text, no headers or formatting.`;
       }
     };
 
-    if (this.openai) {
+    if (this.openai || this.useProxy) {
       const messages: OpenAI.ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },
       ];
@@ -1388,13 +1568,31 @@ Output ONLY the summary text, no headers or formatting.`;
       } else {
         messages.push({ role: 'user', content: userPrompt });
       }
-      const response = await this.openai.chat.completions.create({
+      if (this.useProxy && !this.openai) {
+        return parseResult(await this.callProxyNonStreaming(messages, CHEAP_MODEL, 500));
+      }
+      // Stream the response so we can detect the step text early and kick off
+      // cursor computation in parallel with the rest of the JSON arriving.
+      const stream = await this.openai!.chat.completions.create({
         model: CHEAP_MODEL,
         messages,
         max_tokens: 500,
+        stream: true,
       });
-      const raw = response.choices[0]?.message?.content?.trim() ?? '';
-      return parseResult(raw);
+      let accumulated = '';
+      let callbackFired = false;
+      for await (const chunk of stream) {
+        accumulated += chunk.choices[0]?.delta?.content ?? '';
+        // Detect complete nextStep string value mid-stream: "nextStep": "...",
+        if (!callbackFired && onStepTextReady) {
+          const match = accumulated.match(/"nextStep"\s*:\s*"((?:[^"\\]|\\.)+?)"\s*,/);
+          if (match) {
+            callbackFired = true;
+            onStepTextReady(match[1]);
+          }
+        }
+      }
+      return parseResult(accumulated);
     } else if (this.anthropic) {
       const content: Anthropic.MessageCreateParams['content'] = [
         { type: 'text', text: userPrompt },
@@ -1425,22 +1623,116 @@ Output ONLY the summary text, no headers or formatting.`;
     stepText: string,
     screenshot: CaptureResult,
   ): Promise<ClickTarget | null> {
+    const imgW = screenshot.dimensions?.width ?? screenshot.displayBounds?.width ?? 1920;
+    const imgH = screenshot.dimensions?.height ?? screenshot.displayBounds?.height ?? 1080;
+
+    // ── Computer Use API path ──────────────────────────────────────────────────
+    // Anthropic-recommended resolutions (from Clicky reference). Pick the one
+    // whose aspect ratio best matches the actual display to minimise distortion.
+    const CU_RESOLUTIONS = [
+      { width: 1024, height: 768  },  // 4:3   — legacy displays
+      { width: 1280, height: 800  },  // 16:10 — most Macs
+      { width: 1366, height: 768  },  // 16:9  — external monitors
+    ] as const;
+
+    if (screenshot?.imageBase64 && BUNDLED_OPENROUTER_KEY) {
+      const GEMINI_CU_MODEL = 'gemini-2.5-computer-use-preview-10-2025';
+
+      // Resize to nearest CU resolution for consistent coordinate mapping
+      const displayW = screenshot.displayBounds?.width ?? imgW;
+      const displayH = screenshot.displayBounds?.height ?? imgH;
+      const displayRatio = displayW / displayH;
+      const cuRes = CU_RESOLUTIONS.reduce((best, cur) =>
+        Math.abs(cur.width / cur.height - displayRatio) < Math.abs(best.width / best.height - displayRatio)
+          ? cur : best
+      );
+      const imgBuffer = Buffer.from(screenshot.imageBase64, 'base64');
+      const cuImage = nativeImage.createFromBuffer(imgBuffer)
+        .resize({ width: cuRes.width, height: cuRes.height });
+      const cuBase64 = cuImage.toPNG().toString('base64');
+
+      try {
+        const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${BUNDLED_OPENROUTER_KEY}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://build-buddy.app',
+            'X-Title': 'Build Buddy',
+          },
+          body: JSON.stringify({
+            model: `google/${GEMINI_CU_MODEL}`,
+            contents: [{
+              role: 'user',
+              parts: [
+                { text: `Find and click the UI element for: "${stepText}". The image is ${cuRes.width}x${cuRes.height} pixels.` },
+                { inline_data: { mime_type: 'image/png', data: cuBase64 } },
+              ],
+            }],
+            tools: [{ computer_use: { environment: 'browser' } }],
+            tool_config: { function_calling_config: { mode: 'ANY' } },
+          }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const parts = data.candidates?.[0]?.content?.parts ?? [];
+          const fnCall = parts.find((p: any) => p.functionCall);
+          if (fnCall?.functionCall) {
+            const args = fnCall.functionCall.args ?? {};
+            const coord = args.coordinate ?? args.coord;
+            if (Array.isArray(coord) && coord.length === 2) {
+              const [cx, cy] = coord;
+              console.log('[generateClickTarget] Gemini CU via OpenRouter coord:', cx, cy, 'res:', `${cuRes.width}x${cuRes.height}`);
+              return {
+                xRatio: Math.min(1, Math.max(0, cx / cuRes.width)),
+                yRatio: Math.min(1, Math.max(0, cy / cuRes.height)),
+                confidence: 1,
+                description: stepText,
+              };
+            }
+          }
+          console.warn('[generateClickTarget] Gemini CU: unexpected response, falling back to vision API', JSON.stringify(data).slice(0, 300));
+        } else {
+          console.warn('[generateClickTarget] Gemini CU failed:', resp.status, await resp.text().catch(() => ''));
+        }
+      } catch (err) {
+        console.warn('[generateClickTarget] Gemini CU error, falling back to vision API:', err);
+      }
+    }
+    // ── End Computer Use path — fall through to vision API ───────────────────
+
     const systemPrompt =
-      'You are a precise UI element locator. Given a screenshot and a task description, ' +
-      'find the center of the UI element the user needs to interact with. ' +
-      'Express its position as normalized ratios: xRatio (0.0=left edge, 1.0=right edge) and yRatio (0.0=top edge, 1.0=bottom edge). ' +
-      'Reply with ONLY valid JSON — no markdown, no explanation: ' +
-      '{"xRatio": <0.00-1.00>, "yRatio": <0.00-1.00>, "confidence": <0.0-1.0>, "description": "<element name>"}. ' +
-      'If no specific clickable element is relevant (e.g. the step is a keyboard shortcut or text input), set confidence to 0.0.';
+      `You are a UI element locator that guides users by pointing at relevant areas of the screen. ` +
+      `The screenshot is ${imgW}×${imgH} pixels. Origin (0,0) is top-left, x increases right, y increases down. ` +
+      `For the given step, identify the most relevant area or element the user should interact with or look at. ` +
+      `ALWAYS return x and y coordinates — even if the step involves typing or creating something, point to the relevant panel, input field, or area where the action should happen. ` +
+      `Reply with ONLY valid JSON, no markdown: ` +
+      `{"x": <integer>, "y": <integer>, "confidence": <0.0-1.0>, "description": "<short description of where to look>"}. ` +
+      `Set confidence 0.8-1.0 for a specific clickable button, 0.4-0.7 for a general area, 0.1-0.3 if very uncertain. ` +
+      `NEVER omit x and y — always pick the best guess even if uncertain.`;
 
-    const userPrompt = `The user needs to do this: "${stepText}"\n\nLook at the screenshot and find the exact UI element they need to click. Return JSON only.`;
+    const userPrompt =
+      `Step to perform: "${stepText}"\n\n` +
+      `Point to the most relevant UI area for this step. Return JSON with x, y coordinates (integers) and confidence (0.0-1.0). JSON only.`;
 
+    // Converts an absolute-pixel response {x, y} into normalized ratios.
+    // Also accepts legacy {xRatio, yRatio} in case the model ignores the prompt.
     const parseTarget = (raw: string): ClickTarget | null => {
       let clean = raw.trim();
       if (clean.startsWith('```json')) clean = clean.replace(/^```json\s*/, '').replace(/\s*```$/, '');
       else if (clean.startsWith('```')) clean = clean.replace(/^```\s*/, '').replace(/\s*```$/, '');
       try {
         const parsed = JSON.parse(clean);
+        // New format: absolute pixel coordinates
+        if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+          return {
+            xRatio: Math.min(1, Math.max(0, parsed.x / imgW)),
+            yRatio: Math.min(1, Math.max(0, parsed.y / imgH)),
+            confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 1,
+            description: parsed.description,
+          };
+        }
+        // Legacy fallback: normalized ratios
         if (typeof parsed.xRatio === 'number' && typeof parsed.yRatio === 'number') {
           return parsed as ClickTarget;
         }
@@ -1450,7 +1742,7 @@ Output ONLY the summary text, no headers or formatting.`;
       }
     };
 
-    if (this.openai) {
+    if (this.openai || this.useProxy) {
       const messages: OpenAI.ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },
       ];
@@ -1465,12 +1757,42 @@ Output ONLY the summary text, no headers or formatting.`;
       } else {
         messages.push({ role: 'user', content: userPrompt });
       }
-      const response = await this.openai.chat.completions.create({
-        model: CHEAP_MODEL,
+      if (this.useProxy && !this.openai) {
+        return parseTarget(await this.callProxyNonStreaming(messages, CURSOR_VISION_MODEL, 150));
+      }
+      // Use raw fetch so the provider preference field is guaranteed to reach OpenRouter
+      // (the OpenAI SDK strips unknown fields before sending).
+      if (ACTIVE_AI_BACKEND === 'openrouter') {
+        const apiKey = (this.openai as any).apiKey as string;
+        const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://build-buddy.app',
+            'X-Title': 'Build Buddy',
+          },
+          body: JSON.stringify({
+            model: CURSOR_VISION_MODEL,
+            messages,
+            max_tokens: 150,
+            provider: { order: ['Anthropic'], allow_fallbacks: false },
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(`Vision API error ${resp.status}: ${JSON.stringify(data)}`);
+        const rawContent = data.choices?.[0]?.message?.content?.trim() ?? '';
+        console.log('[generateClickTarget] model:', CURSOR_VISION_MODEL, 'raw:', rawContent);
+        return parseTarget(rawContent);
+      }
+      const response = await this.openai!.chat.completions.create({
+        model: CURSOR_VISION_MODEL,
         messages,
-        max_tokens: 100,
+        max_tokens: 150,
       });
-      return parseTarget(response.choices[0]?.message?.content?.trim() ?? '');
+      const rawContent = response.choices[0]?.message?.content?.trim() ?? '';
+      console.log('[generateClickTarget] model:', CURSOR_VISION_MODEL, 'raw:', rawContent);
+      return parseTarget(rawContent);
     } else if (this.anthropic) {
       const content: Anthropic.MessageCreateParams['content'] = [
         { type: 'text', text: userPrompt },
@@ -1482,8 +1804,8 @@ Output ONLY the summary text, no headers or formatting.`;
         });
       }
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-haiku-20240307',
-        max_tokens: 100,
+        model: CURSOR_VISION_MODEL,
+        max_tokens: 150,
         system: systemPrompt,
         messages: [{ role: 'user', content }],
       });
@@ -1847,5 +2169,91 @@ Respond with JSON only:`;
       safety_notes: Array.isArray(parsed.safety_notes) ? parsed.safety_notes : [],
       requires_user_confirmation: parsed.requires_user_confirmation !== false,
     };
+  }
+
+  // ===== YouTube Transcript Step Extraction =====
+
+  async generateStepsFromTranscript(
+    segments: Array<{ text: string; offset: number }>,
+    goal: string,
+  ): Promise<Array<{ step: string; timestamp: number; pauseAt: number }>> {
+    const durationSec = segments.length ? segments[segments.length - 1].offset : 0;
+    const targetSteps = Math.max(8, Math.min(40, Math.round(durationSec / 90)));
+    const maxSteps = Math.min(40, targetSteps + 10);
+    const durationMin = Math.max(1, Math.round(durationSec / 60));
+
+    const systemPrompt =
+      'You are a tutorial guide. Given a timestamped video transcript, extract the exact moments where the user must perform an action. ' +
+      'Your response MUST be a raw JSON array and nothing else — no markdown fences, no explanation, no preamble. Start your response with [ and end with ]. ' +
+      'Format: [{"step": "Click File > New Level", "timestamp": 42, "pauseAt": 51}, {"step": "Select Empty Level", "timestamp": 58, "pauseAt": 64}] ' +
+      '- "step": concise imperative instruction (what the user actively does) ' +
+      '- "timestamp": integer seconds when the instructor STARTS explaining or demonstrating the step ' +
+      '- "pauseAt": integer seconds when the instructor has FINISHED the demonstration and the user should now act — look for natural speech pauses, topic transitions, or completion phrases like "there we go", "and that\'s it", "so now you can see". This should be after "timestamp" but before the next step starts. ' +
+      `Aim for roughly ${targetSteps} steps spread evenly across the FULL video duration of ~${durationMin} minutes. Do not skip the second half of the video — the last step's pauseAt should be near the end of the video. Maximum ${maxSteps} steps. ` +
+      'Skip narration, intros, and explanations. Only include steps the user must perform.';
+
+    const joined = segments.map((s) => `[${s.offset}s] ${s.text}`).join(' ');
+    const TRANSCRIPT_CHAR_LIMIT = 40000;
+    const transcriptText =
+      joined.length > TRANSCRIPT_CHAR_LIMIT
+        ? joined.slice(0, 28000) + ' [... transcript continues ...] ' + joined.slice(-12000)
+        : joined;
+
+    const userContent = `Goal: ${goal}\n\nTranscript:\n${transcriptText}`;
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent },
+    ];
+
+    if (segments.length === 0) {
+      throw new Error('No captions found for this video. Try a video with subtitles enabled.');
+    }
+
+    if (this.openai || this.useProxy) {
+      let raw: string;
+      if (this.useProxy && !this.openai) {
+        raw = (await this.callProxyNonStreaming(messages, CHEAP_MODEL, 5000)) ?? '';
+      } else {
+        const response = await this.openai!.chat.completions.create({
+          model: CHEAP_MODEL,
+          messages,
+          max_tokens: 5000,
+          stream: false,
+        });
+        raw = response.choices[0]?.message?.content ?? '';
+      }
+      // Strip markdown code fences if present
+      const stripped = raw.replace(/```[a-z]*\n?/gi, '').trim();
+      const jsonMatch = stripped.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        try {
+          const parsed: Array<{ step: string; timestamp: number; pauseAt?: number }> = JSON.parse(jsonMatch[0]);
+          const valid = parsed
+            .filter((e) => typeof e.step === 'string' && typeof e.timestamp === 'number')
+            .map((e) => ({
+              step: e.step,
+              timestamp: e.timestamp,
+              // If AI omitted pauseAt, fall back to timestamp + 8s
+              pauseAt: typeof e.pauseAt === 'number' ? e.pauseAt : e.timestamp + 8,
+            }));
+          if (valid.length > 0) return valid;
+        } catch {
+          // fall through to numbered-list fallback
+        }
+      }
+      // Fallback: if AI returned a numbered list anyway, extract steps with best-effort timestamps
+      const lines = stripped.split('\n').filter((l) => /^\s*\d+[.)]\s+/.test(l));
+      if (lines.length > 0) {
+        return lines.map((line, idx) => ({
+          step: line.replace(/^\s*\d+[.)]\s+/, '').trim(),
+          timestamp: idx * 30,
+          pauseAt: idx * 30 + 8,
+        }));
+      }
+      throw new Error(`Could not extract steps. AI returned: "${raw.slice(0, 300)}"`);
+    }
+
+    throw new Error('No AI provider configured for transcript step extraction');
   }
 }

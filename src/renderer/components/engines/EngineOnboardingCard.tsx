@@ -49,6 +49,13 @@ export function EngineOnboardingCard({ setupStatus, onDone, onDismiss }: EngineO
     }
   }, [engine]);
 
+  // Track onboarding start once per mount
+  useEffect(() => {
+    if (engine) {
+      window.electronAPI?.analytics?.track('engine_setup_started', { engineType: engine });
+    }
+  }, [engine]);
+
   // Auto-trigger install on mount if there are automatic steps
   useEffect(() => {
     const hasAutoStep = setupStatus.pendingSteps.some(s => s.isAutomatic);
@@ -59,11 +66,23 @@ export function EngineOnboardingCard({ setupStatus, onDone, onDismiss }: EngineO
       .then((result: { success: boolean; error?: string }) => {
         if (!result.success && result.error) {
           setInstallError(result.error);
+          window.electronAPI?.analytics?.track('engine_setup_failed', {
+            engineType: engine,
+            stage: 'deps',
+            errorClass: /timeout/i.test(result.error) ? 'timeout' : 'other',
+          });
         } else {
           setInstallDone(true);
         }
       })
-      .catch((err: Error) => setInstallError(err.message))
+      .catch((err: Error) => {
+        setInstallError(err.message);
+        window.electronAPI?.analytics?.track('engine_setup_failed', {
+          engineType: engine,
+          stage: 'deps',
+          errorClass: /timeout/i.test(err.message) ? 'timeout' : /network|fetch/i.test(err.message) ? 'network' : 'other',
+        });
+      })
       .finally(() => setIsInstalling(false));
   }, []);
 

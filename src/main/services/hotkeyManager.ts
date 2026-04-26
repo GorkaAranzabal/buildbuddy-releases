@@ -11,6 +11,7 @@ export class HotkeyManager {
     captureWindow: 'CommandOrControl+Shift+2',
     captureRegion: 'CommandOrControl+Shift+3',
     quickAsk: 'CommandOrControl+Enter',
+    quickVoice: 'CommandOrControl+Shift+V',
   };
 
   private registeredShortcuts: string[] = [];
@@ -37,6 +38,7 @@ export class HotkeyManager {
       'captureWindow',
       'captureRegion',
       'quickAsk',
+      'quickVoice',
     ];
 
     for (const action of actions) {

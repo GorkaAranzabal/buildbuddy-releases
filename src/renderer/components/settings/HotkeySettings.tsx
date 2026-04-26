@@ -8,6 +8,7 @@ const HOTKEY_LABELS: Record<keyof HotkeyConfig, string> = {
   captureWindow: 'Capture Window',
   captureRegion: 'Capture Region',
   quickAsk: 'Quick Ask (Focus Input)',
+  quickVoice: 'Quick Voice Input',
 };
 
 export function HotkeySettings() {
@@ -21,6 +22,7 @@ export function HotkeySettings() {
       captureWindow: 'CommandOrControl+Shift+2',
       captureRegion: 'CommandOrControl+Shift+3',
       quickAsk: 'CommandOrControl+Shift+A',
+      quickVoice: 'CommandOrControl+Shift+V',
     }
   );
   const [editingKey, setEditingKey] = useState<keyof HotkeyConfig | null>(null);

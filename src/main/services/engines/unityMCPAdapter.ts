@@ -46,7 +46,7 @@ const WRITE_SCRIPT_TOOL: MCPToolDefinition = {
 
 export class UnityMCPAdapter implements IEngineMCPService {
   private status: EngineMCPStatus = 'disconnected';
-  private statusCallbacks: Array<(s: EngineMCPStatus) => void> = [];
+  private statusCallbacks: Array<(s: EngineMCPStatus, error?: string) => void> = [];
   private mcpClient: any = null;
   private tools: MCPToolDefinition[] = [];
   private projectPath: string = '';
@@ -57,7 +57,7 @@ export class UnityMCPAdapter implements IEngineMCPService {
   }
 
   getStatus(): EngineMCPStatus { return this.status; }
-  onStatusChange(cb: (status: EngineMCPStatus) => void): void { this.statusCallbacks.push(cb); }
+  onStatusChange(cb: (status: EngineMCPStatus, error?: string) => void): void { this.statusCallbacks.push(cb); }
   getTools(): MCPToolDefinition[] { return [WRITE_SCRIPT_TOOL, ...this.tools]; }
   getSetupSteps(): EngineSetupStep[] { return SETUP_STEPS; }
 

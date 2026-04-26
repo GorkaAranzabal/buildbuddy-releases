@@ -3,11 +3,12 @@ import { useAppStore } from './store';
 import { NotchBar, RobotStatus } from './components/layout/NotchBar';
 import { ExpandedPanel } from './components/layout/ExpandedPanel';
 import { SettingsPanel } from './components/layout/SettingsPanel';
+import { BlueprintsView } from './components/layout/BlueprintsView';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { EngineOnboardingCard } from './components/engines/EngineOnboardingCard';
-import type { SelectedEngine } from '../../shared/types';
+import type { EngineMCPStatus, SelectedEngine } from '../../shared/types';
 
-type ViewMode = 'collapsed' | 'chat' | 'settings' | 'login';
+type ViewMode = 'collapsed' | 'chat' | 'settings' | 'blueprints' | 'login';
 
 function App() {
   const {
@@ -29,6 +30,26 @@ function App() {
 
   // Track vignette state to handle show/hide properly
   const vignetteShownRef = useRef(false);
+
+  // Listen for window:collapsed-changed from the main process.
+  // The main process hides the window (opacity=0) before resizing, then immediately sends
+  // this event. We update the view, then call restoreOpacity only after the browser has
+  // painted the new layout — a double rAF ensures the frame is actually on screen first.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.window.onCollapsedChanged((collapsed: boolean) => {
+      if (!collapsed) {
+        setViewMode('chat');
+        // Double rAF: first fires after React commits to DOM, second after the browser paints.
+        // Only then do we make the window visible, so the user never sees an intermediate state.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            window.electronAPI?.window.restoreOpacity();
+          });
+        });
+      }
+    });
+    return () => unsubscribe?.();
+  }, []);
 
   // Handle full-screen vignette visibility via IPC
   useEffect(() => {
@@ -134,8 +155,8 @@ function App() {
     const unsubscribeEngineSelected = window.electronAPI.engine.onSelected((engine: SelectedEngine) => {
       setSelectedEngine(engine);
     });
-    const unsubscribeEngineMCP = window.electronAPI.engineMcp.onStatusChange((status) => {
-      setEngineMCPStatus(status);
+    const unsubscribeEngineMCP = window.electronAPI.engineMcp.onStatusChange((status: EngineMCPStatus, error?: string) => {
+      setEngineMCPStatus(status, error);
     });
 
     // Listen for focus-input hotkey to expand (always expand, don't toggle)
@@ -225,7 +246,9 @@ function App() {
 
   const handleToggleExpanded = () => {
     if (viewMode === 'collapsed') {
-      setViewMode('chat');
+      // Don't update viewMode here — wait for window:collapsed-changed from the main process.
+      // The main process sends it after the OS has committed the new window bounds, so React
+      // only renders the expanded layout once the window is already at the correct position.
       setCollapsed(false);
       window.electronAPI?.window.collapse(false);
     } else {
@@ -237,6 +260,13 @@ function App() {
 
   const handleOpenSettings = () => {
     setViewMode('settings');
+    setCollapsed(false);
+    window.electronAPI?.window.collapse(false);
+    window.electronAPI?.window.enterSettings();
+  };
+
+  const handleOpenBlueprints = () => {
+    setViewMode('blueprints');
     setCollapsed(false);
     window.electronAPI?.window.collapse(false);
     window.electronAPI?.window.enterSettings();
@@ -311,11 +341,12 @@ function App() {
     <div className="w-full h-full flex flex-col items-center pt-0">
       {/* Notch Bar - Hidden during login. z-[60] ensures dropdowns inside (which create a new stacking context via backdropFilter) render above ExpandedPanel */}
       {viewMode !== 'login' && (
-        <div className="relative z-[60]">
+        <div className={`relative z-[60] ${isExpanded ? 'pt-11' : ''}`}>
           <NotchBar
             isExpanded={isExpanded}
             onToggle={handleToggleExpanded}
             onSettings={handleOpenSettings}
+            onOpenBlueprints={handleOpenBlueprints}
             isLoading={isLoading}
             robotStatus={robotStatus}
             selectedEngine={selectedEngine}
@@ -344,6 +375,11 @@ function App() {
       {/* Settings Panel - Shows when in settings mode */}
       {viewMode === 'settings' && (
         <SettingsPanel onClose={handleClose} onBack={handleBackToChat} onLogout={handleLogout} />
+      )}
+
+      {/* Blueprints Panel - Shows when in blueprints mode */}
+      {viewMode === 'blueprints' && (
+        <BlueprintsView onClose={handleClose} onBack={handleBackToChat} />
       )}
 
       {/* Engine Onboarding Card - Overlay for first-time engine setup */}

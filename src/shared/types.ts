@@ -216,6 +216,7 @@ export interface AIRequest {
   memorySummary?: string;
   projectContext?: string;
   editorSnapshot?: string;
+  mcpConnected?: boolean;
 }
 
 export interface CodeSnippet {
@@ -294,6 +295,7 @@ export interface HotkeyConfig {
   captureWindow: string;
   captureRegion: string;
   quickAsk: string;
+  quickVoice: string;
 }
 
 export interface UserSettings {

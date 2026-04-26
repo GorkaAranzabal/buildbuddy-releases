@@ -2,6 +2,7 @@ import { Low } from 'lowdb';
 import { JSONFile } from 'lowdb/node';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { app, safeStorage } from 'electron';
 import type {
   ConversationThread,
@@ -46,6 +47,7 @@ const DEFAULT_HOTKEY_CONFIG: HotkeyConfig = {
   captureWindow: 'CommandOrControl+Shift+2',
   captureRegion: 'CommandOrControl+Shift+3',
   quickAsk: 'CommandOrControl+Enter',
+  quickVoice: 'CommandOrControl+Shift+V',
 };
 
 const DEFAULT_WINDOW_STATE: WindowState = {
@@ -381,13 +383,49 @@ export class StorageService {
     return new Date(d.getFullYear(), d.getMonth(), diff).toISOString().split('T')[0];
   }
 
+  // ---- Reinstall-resistant backup in home directory ----
+  // Stored at ~/.build-buddy-usage.json — survives app reinstalls since it's
+  // outside the app's userData folder. Keyed by email+week so multiple users
+  // on the same machine and weekly resets both work correctly.
+
+  private get usageBackupPath(): string {
+    return path.join(os.homedir(), '.build-buddy-usage.json');
+  }
+
+  private readUsageBackup(): { email: string; weekStart: string; askCount: number } | null {
+    try {
+      const raw = fs.readFileSync(this.usageBackupPath, 'utf-8');
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  private writeUsageBackup(email: string, weekStart: string, askCount: number): void {
+    try {
+      fs.writeFileSync(this.usageBackupPath, JSON.stringify({ email, weekStart, askCount }), 'utf-8');
+    } catch {
+      // Non-fatal — local db is still the source of truth during this session
+    }
+  }
+  // -------------------------------------------------------
+
   async getDailyUsage(): Promise<DailyUsage> {
     if (!this.db) throw new Error('Database not initialized');
 
     const weekStart = this.getWeekStart();
+    const email = this.db.data.authEmail ?? '';
 
     if (this.db.data.dailyUsage.date !== weekStart) {
       this.db.data.dailyUsage = { date: weekStart, askCount: 0 };
+      await this.db.write();
+    }
+
+    // Check home-dir backup — if it has a higher count for this email+week,
+    // restore it so a fresh reinstall doesn't reset the limit.
+    const backup = this.readUsageBackup();
+    if (backup && backup.email === email && backup.weekStart === weekStart && backup.askCount > this.db.data.dailyUsage.askCount) {
+      this.db.data.dailyUsage.askCount = backup.askCount;
       await this.db.write();
     }
 
@@ -398,6 +436,7 @@ export class StorageService {
     if (!this.db) throw new Error('Database not initialized');
 
     const weekStart = this.getWeekStart();
+    const email = this.db.data.authEmail ?? '';
 
     if (this.db.data.dailyUsage.date !== weekStart) {
       this.db.data.dailyUsage = { date: weekStart, askCount: 0 };
@@ -405,6 +444,9 @@ export class StorageService {
 
     this.db.data.dailyUsage.askCount++;
     await this.db.write();
+
+    // Mirror to home-dir backup so the count survives a reinstall
+    this.writeUsageBackup(email, weekStart, this.db.data.dailyUsage.askCount);
 
     return { ...this.db.data.dailyUsage };
   }

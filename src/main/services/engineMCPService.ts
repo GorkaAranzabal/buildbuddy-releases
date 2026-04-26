@@ -17,7 +17,7 @@ export interface IEngineMCPService {
   callTool(name: string, args: Record<string, unknown>): Promise<MCPToolResult>;
   getEditorSnapshot(): Promise<string>;
   testConnection(): Promise<MCPProjectInfo | null>;
-  onStatusChange(cb: (status: EngineMCPStatus) => void): void;
+  onStatusChange(cb: (status: EngineMCPStatus, error?: string) => void): void;
   getSetupSteps(): EngineSetupStep[];
   checkSetup(): Promise<EngineSetupStatus>;
   installDeps(): Promise<{ success: boolean; error?: string }>;

@@ -19,14 +19,33 @@ const QUICK_ACTIONS = [
   { id: 'recap', label: 'Recap', icon: '↻' },
 ];
 
-const enableDoItForMe = true;
+const enableDoItForMe = false;
 const enableQuickActions = false;
 
 const HISTORY_WINDOW_SIZE = 10;
 const SUMMARIZE_THRESHOLD = 16;
 
+// Tool-loop streams presentational markers (⚡ name — executing…, ✓ Done, ✗ Error)
+// into the assistant's displayed content. Feeding those back as plain history
+// primes the model to describe tool usage instead of calling the tool — remove
+// them before replay so it only sees its actual prose.
+function stripToolUIMarkers(content: string): string {
+  return content
+    .replace(/^\s*\*\*⚡[^\n]*\n?/gm, '')
+    .replace(/^\s*\*\*✓\*\*[^\n]*\n?/gm, '')
+    .replace(/^\s*\*\*✗\*\*[^\n]*\n?/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
   const [input, setInput] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingResponseRef = useRef<string>('');
@@ -40,8 +59,8 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
   const [fairUseRequestType, setFairUseRequestType] = useState<'chat' | 'rc'>('chat');
   const [updateReady, setUpdateReady] = useState(false);
   const [updateDownloading, setUpdateDownloading] = useState<string | null>(null);
-  const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateDismissedAt, setUpdateDismissedAt] = useState<number | null>(null);
+  const [showUpdateRequiredPrompt, setShowUpdateRequiredPrompt] = useState(false);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [streamingRevealed, setStreamingRevealed] = useState(false);
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -72,28 +91,56 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
     setGuidedModePending,
     selectedEngine,
     engineMCPStatus,
+    engineMCPError,
     unrealMCPStatus,
     agentMode,
     setAgentMode,
+    updateError,
+    setUpdateError,
   } = useAppStore();
   const isPro = useAppStore(selectIsPro);
+  const hotkeyConfig = useAppStore((s) => s.hotkeyConfig);
 
   const activeMCPStatus = selectedEngine === 'unreal' ? unrealMCPStatus : engineMCPStatus;
   const isMCPConnected = !!(selectedEngine && activeMCPStatus === 'connected');
+  const [mcpStartError, setMcpStartError] = useState<string | null>(null);
 
-  const startMCP = () => {
+  // Clear the click-time error as soon as a fresh attempt or success arrives.
+  useEffect(() => {
+    if (activeMCPStatus === 'starting' || activeMCPStatus === 'connected') {
+      setMcpStartError(null);
+    }
+  }, [activeMCPStatus]);
+
+  const activeMCPError = activeMCPStatus === 'error'
+    ? (mcpStartError ?? (selectedEngine !== 'unreal' ? engineMCPError : null))
+    : null;
+
+  const startMCP = async () => {
     if (!isPro && !settings?.devMode) {
       setUpgradeTitle('Pro Feature');
       setUpgradeMessage('Engine Remote Control is available on the Pro plan. Upgrade to directly control Unreal, Unity, Godot, Blender, and more from the AI.');
       setShowUpgradePrompt(true);
       return;
     }
-    if (selectedEngine === 'unreal') window.electronAPI.unrealMcp.start();
-    else (window.electronAPI as any).engineMcp.start();
+    setMcpStartError(null);
+    try {
+      const result = selectedEngine === 'unreal'
+        ? await window.electronAPI.unrealMcp.start()
+        : await (window.electronAPI as any).engineMcp.start();
+      if (result && result.success === false && result.error) {
+        setMcpStartError(result.error);
+      }
+    } catch (err) {
+      setMcpStartError(err instanceof Error ? err.message : String(err));
+    }
   };
   const stopMCP = () => {
     if (selectedEngine === 'unreal') window.electronAPI.unrealMcp.stop();
     else (window.electronAPI as any).engineMcp.stop();
+  };
+  const openMCPLog = () => {
+    (window.electronAPI as any).engineMcp.openLog?.();
   };
 
   // Reset any stale guided mode state on mount (can get stuck after HMR reloads or re-opens)
@@ -133,14 +180,15 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
   // show "Preparing guided steps…" — before the 600ms reveal timer fires.
   // This prevents the user from seeing the raw typed text before guided mode kicks in.
   useEffect(() => {
-    if (!streamingResponse || guidedModePending || streamingRevealed) return;
+    if (!streamingResponse || guidedModePending) return;
     const state = useAppStore.getState();
     const activeStatus = state.selectedEngine === 'unreal' ? state.unrealMCPStatus : state.engineMCPStatus;
     if (state.selectedEngine && activeStatus === 'connected' && state.agentMode === 'action') return;
     if (hasEarlyStepIntent(streamingResponse)) {
+      setStreamingRevealed(false);
       setGuidedModePending(true);
     }
-  }, [streamingResponse, guidedModePending, streamingRevealed, setGuidedModePending]);
+  }, [streamingResponse, guidedModePending, setGuidedModePending]);
 
   // Detect steps mid-stream so we can hide the typing and go straight to guided mode.
   // Skip only when MCP is active AND in action mode — tool calls handle execution directly.
@@ -192,6 +240,23 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
       textareaRef.current?.focus();
     }, 100);
     return () => clearTimeout(timer);
+  }, []);
+
+  // Focus textarea when quickAsk hotkey fires
+  useEffect(() => {
+    const unsub = (window.electronAPI as any).onFocusInput(() => {
+      setTimeout(() => textareaRef.current?.focus(), 50);
+    });
+    return unsub;
+  }, []);
+
+  // Start voice when quickVoice hotkey fires
+  useEffect(() => {
+    const unsub = (window.electronAPI as any).onStartVoice(() => {
+      setTimeout(() => toggleVoiceInput(), 150); // slight delay so window has focus
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Listen for auto-update events
@@ -350,13 +415,66 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
   const buildWindowedHistory = () => {
     const allMessages = messages.map((msg) => ({
       role: msg.role as 'user' | 'assistant',
-      content: msg.content,
+      content: msg.role === 'assistant' ? stripToolUIMarkers(msg.content) : msg.content,
     }));
     return allMessages.slice(-HISTORY_WINDOW_SIZE);
   };
 
+  const extractYouTubeVideoId = (text: string): string | null => {
+    const m = text.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    return m ? m[1] : null;
+  };
+
+  const handleYouTubeFlow = async (videoId: string, videoUrl: string, prompt: string) => {
+    setInput('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    setGuidedModePending(true);
+    setLoading(true);
+    try {
+      const segments: Array<{ text: string; offset: number }> =
+        await (window.electronAPI as any).youtube.fetchTranscript(videoId);
+      const stepsWithTimestamps: Array<{ step: string; timestamp: number; pauseAt: number }> =
+        await window.electronAPI.ai.generateStepsFromTranscript({ segments, goal: prompt });
+      const steps = stepsWithTimestamps.map((s) => s.step);
+      // Use pauseAt — the AI-identified moment when the demo finishes — as the pause trigger
+      const timestamps = stepsWithTimestamps.map((s) => s.pauseAt);
+      const messageId = uuidv4();
+      enterGuidedMode(steps, messageId, prompt, videoUrl, timestamps);
+    } catch (err: any) {
+      setGuidedModePending(false);
+      const errorMessage: ChatMessage = {
+        id: uuidv4(),
+        role: 'assistant',
+        content: `Couldn't load video steps: ${err?.message ?? 'Unknown error'}`,
+        timestamp: Date.now(),
+      };
+      addMessage(errorMessage);
+    }
+    setLoading(false);
+  };
+
   const handleSend = async (prompt: string) => {
     if (!prompt.trim() || isLoading) return;
+
+    // Block sending if auto-update failed — the user is on a stale version and we can't
+    // safely continue. The popup links them to the landing page for a manual reinstall.
+    if (updateError) {
+      setShowUpdateRequiredPrompt(true);
+      return;
+    }
+
+    const videoId = extractYouTubeVideoId(prompt);
+    if (videoId) {
+      if (!isPro && !settings?.devMode) {
+        setUpgradeTitle('Pro Feature');
+        setUpgradeMessage('YouTube Tutorial Guide is available on the Pro plan. Upgrade to follow along with any YouTube tutorial and get step-by-step guidance with the virtual cursor aimed directly at what to click.');
+        setShowUpgradePrompt(true);
+        return;
+      }
+      const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+      await handleYouTubeFlow(videoId, videoUrl, prompt);
+      return;
+    }
 
     // Clear input immediately for instant UI feedback
     setInput('');
@@ -453,6 +571,86 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
     }, 0);
   };
 
+  const stopVoiceInput = () => {
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+    analyserRef.current = null; // signals the rAF loop to stop
+    mediaRecorderRef.current?.stop(); // triggers onstop → transcription
+    setIsListening(false);
+  };
+
+  const toggleVoiceInput = async () => {
+    if (isListening) { stopVoiceInput(); return; }
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      return; // mic permission denied — do nothing
+    }
+
+    // Silence detection via Web Audio API
+    const audioCtx = new AudioContext();
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    analyserRef.current = analyser;
+    const dataArray = new Uint8Array(analyser.fftSize);
+
+    const checkSilence = () => {
+      if (!analyserRef.current) return; // stopped
+      analyser.getByteTimeDomainData(dataArray);
+      const rms = Math.sqrt(dataArray.reduce((s, v) => s + (v - 128) ** 2, 0) / dataArray.length);
+      if (rms < 4) {
+        if (!silenceTimerRef.current) {
+          silenceTimerRef.current = setTimeout(() => stopVoiceInput(), 2500);
+        }
+      } else {
+        if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+      }
+      requestAnimationFrame(checkSilence);
+    };
+    requestAnimationFrame(checkSilence);
+
+    // Set up MediaRecorder
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : 'audio/webm';
+    audioChunksRef.current = [];
+    const recorder = new MediaRecorder(stream, { mimeType });
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data);
+    };
+
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      audioCtx.close();
+      const blob = new Blob(audioChunksRef.current, { type: mimeType });
+      const arrayBuffer = await blob.arrayBuffer();
+      // Chunked base64 encode — spreading a Uint8Array into String.fromCharCode
+      // overflows the call stack once the recording is more than a few seconds.
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+        binary += String.fromCharCode.apply(null, Array.from(chunk));
+      }
+      const audioBase64 = btoa(binary);
+      setIsTranscribing(true);
+      try {
+        const transcript = await (window.electronAPI as any).ai.transcribeAudio({ audioBase64, mimeType });
+        if (transcript) setInput((prev) => (prev ? prev + ' ' + transcript : transcript));
+      } finally {
+        setIsTranscribing(false);
+      }
+    };
+
+    mediaRecorderRef.current = recorder;
+    recorder.start();
+    setIsListening(true);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -491,30 +689,20 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
           maxHeight: 'calc(100vh - 52px)',
         }}
       >
-        {/* Top bar with New Chat and Close */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-white/[0.06]">
-          {hasMessages ? (
+        {/* Top bar with New Chat */}
+        {hasMessages && !showStepsUI && (
+          <div className="flex items-center px-3 pt-2 pb-1">
             <button
               onClick={handleNewChat}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-white/60 hover:text-white/80 text-xs font-medium transition-all"
+              className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.06] hover:bg-white/[0.1] text-white/50 hover:text-white/70 text-xs font-medium transition-all"
             >
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
               New Chat
             </button>
-          ) : (
-            <div />
-          )}
-          <button
-            onClick={onClose}
-            className="w-6 h-6 rounded-full bg-white/[0.1] hover:bg-white/[0.15] flex items-center justify-center transition-all"
-          >
-            <svg className="w-3.5 h-3.5 text-white/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
+          </div>
+        )}
 
         {/* Update banner */}
         {/* Update downloading banner */}
@@ -601,6 +789,43 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
                 message={upgradeMessage}
                 onDismiss={() => setShowUpgradePrompt(false)}
               />
+            )}
+
+            {/* Update-required prompt: shown when the user tries to chat but auto-update has failed */}
+            {showUpdateRequiredPrompt && (
+              <div className="mx-4 mb-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-red-500/20">
+                      <svg className="h-4 w-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3L13.74 4a2 2 0 00-3.48 0L3.19 16a2 2 0 001.74 3z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white/90">Update required to continue</p>
+                      <p className="mt-0.5 text-xs text-white/50">
+                        The auto-update couldn't finish. Please reinstall the latest version of Build Buddy from our website to keep using the app.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowUpdateRequiredPrompt(false)}
+                    className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-white/[0.08] hover:bg-white/[0.14] transition-all"
+                  >
+                    <svg className="h-3 w-3 text-white/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <a
+                  href="https://build-buddy.app/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-3 block rounded-lg bg-red-500 py-2 text-center text-xs font-semibold text-white hover:bg-red-400 transition-all"
+                >
+                  Download latest from build-buddy.app
+                </a>
+              </div>
             )}
 
             {/* Fair-use timeout banner */}
@@ -697,6 +922,15 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
                         <>
                           <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
                           <span className="text-xs text-green-400/80">MCP connected</span>
+                          {selectedEngine === 'blender' && (
+                            <button
+                              onClick={openMCPLog}
+                              className="ml-1 px-1.5 py-0.5 rounded-md bg-white/[0.04] hover:bg-white/[0.10] text-white/30 hover:text-white/60 text-[10px] transition-all shrink-0"
+                              title="Open the Blender MCP diagnostic log"
+                            >
+                              Logs
+                            </button>
+                          )}
                           {/* Guide / Act toggle — only visible when MCP is connected */}
                           <div className="ml-2 flex items-center rounded-full border border-white/[0.12] bg-white/[0.04] p-0.5">
                             <button
@@ -756,14 +990,28 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
                         </>
                       ) : activeMCPStatus === 'error' ? (
                         <>
-                          <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />
-                          <span className="text-xs text-red-400/80">MCP error</span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block shrink-0" />
+                          <span
+                            className="text-xs text-red-400/80 truncate max-w-[260px]"
+                            title={activeMCPError ?? 'MCP error'}
+                          >
+                            {activeMCPError ?? 'MCP error'}
+                          </span>
                           <button
                             onClick={startMCP}
-                            className="ml-1 px-2 py-0.5 rounded-md bg-white/[0.08] hover:bg-white/[0.14] text-white/50 hover:text-white/80 text-xs transition-all"
+                            className="ml-1 px-2 py-0.5 rounded-md bg-white/[0.08] hover:bg-white/[0.14] text-white/50 hover:text-white/80 text-xs transition-all shrink-0"
                           >
                             Reconnect
                           </button>
+                          {selectedEngine === 'blender' && (
+                            <button
+                              onClick={openMCPLog}
+                              className="px-2 py-0.5 rounded-md bg-white/[0.08] hover:bg-white/[0.14] text-white/50 hover:text-white/80 text-xs transition-all shrink-0"
+                              title="Open the diagnostic log file"
+                            >
+                              Logs
+                            </button>
+                          )}
                         </>
                       ) : (
                         <>
@@ -819,12 +1067,55 @@ export function ExpandedPanel({ onClose }: ExpandedPanelProps) {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Ask about your screen, or ⌘↵ to Assist"
+                    placeholder={(() => {
+                      const isMac = navigator.platform.startsWith('Mac');
+                      const acc = (hotkeyConfig?.quickAsk ?? 'CommandOrControl+Shift+A')
+                        .replace('CommandOrControl+', isMac ? '⌘' : 'Ctrl+')
+                        .replace('Shift+', isMac ? '⇧' : 'Shift+')
+                        .replace('Alt+', isMac ? '⌥' : 'Alt+');
+                      return `Ask about your screen, or ${acc} to open`;
+                    })()}
                     disabled={isBusy}
                     rows={1}
                     className="w-full px-4 py-2 bg-white/[0.04] border border-white/[0.1] rounded-xl text-sm text-white/95 placeholder-white/40 resize-none focus:outline-none focus:border-white/20 disabled:opacity-50 transition-all hide-scrollbar"
                   />
                 </div>
+
+                {/* Mic button */}
+                <button
+                  type="button"
+                  onClick={toggleVoiceInput}
+                  disabled={isBusy || isTranscribing}
+                  title={isListening ? 'Stop recording' : 'Voice input'}
+                  className={`w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-50 ${
+                    isListening
+                      ? 'bg-red-500 hover:bg-red-400'
+                      : 'bg-white/[0.08] hover:bg-white/[0.15]'
+                  }`}
+                >
+                  {isTranscribing ? (
+                    /* Spinner while transcribing */
+                    <svg className="w-4 h-4 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    </svg>
+                  ) : isListening ? (
+                    /* Stop icon */
+                    <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                      <rect x="5" y="5" width="14" height="14" rx="2" />
+                    </svg>
+                  ) : (
+                    /* Mic icon */
+                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" y1="19" x2="12" y2="23" strokeWidth={2} strokeLinecap="round" />
+                      <line x1="8" y1="23" x2="16" y2="23" strokeWidth={2} strokeLinecap="round" />
+                    </svg>
+                  )}
+                </button>
 
                 {/* Send button */}
                 <button

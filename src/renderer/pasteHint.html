@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Paste Hint</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 100vw;
+        height: 100vh;
+        background: transparent !important;
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+        color: #fff;
+      }
+      .dim {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.72);
+        border-radius: 16px;
+        animation: fadeIn 0.25s ease-out forwards;
+      }
+      .card {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 18px;
+        padding: 24px 28px 26px;
+        border-radius: 18px;
+        background: rgba(16, 18, 28, 0.88);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(16, 185, 129, 0.25);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        animation: pop 0.35s cubic-bezier(0.22, 1.2, 0.36, 1) forwards;
+        opacity: 0;
+        max-width: calc(100vw - 32px);
+      }
+      .label {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(110, 231, 183, 0.95);
+      }
+      .keys {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .key {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 64px;
+        height: 64px;
+        padding: 0 16px;
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), inset 0 -3px 0 rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+        font-size: 26px;
+        font-weight: 600;
+        color: #fff;
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      .plus {
+        font-size: 22px;
+        color: rgba(255, 255, 255, 0.5);
+        font-weight: 300;
+      }
+      .headline {
+        font-size: 16px;
+        font-weight: 600;
+        text-align: center;
+        letter-spacing: -0.01em;
+      }
+      .subline {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.65);
+        text-align: center;
+        max-width: 340px;
+        line-height: 1.5;
+      }
+      .steps {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        width: 100%;
+      }
+      .step {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .step-num {
+        flex-shrink: 0;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: rgba(16, 185, 129, 0.2);
+        border: 1px solid rgba(16, 185, 129, 0.5);
+        color: rgb(110, 231, 183);
+        font-size: 12px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .step-text {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.92);
+        font-weight: 500;
+        text-align: left;
+      }
+      .step-text b {
+        color: #fff;
+        font-weight: 700;
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes pop {
+        0% { opacity: 0; transform: translate(-50%, -48%) scale(0.96); }
+        100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+      }
+      @keyframes pulse {
+        0%, 100% {
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), inset 0 -3px 0 rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 0 rgba(16, 185, 129, 0.4);
+        }
+        50% {
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), inset 0 -3px 0 rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 0 14px rgba(16, 185, 129, 0);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="dim"></div>
+    <div class="card">
+      <div class="label">Blueprint on clipboard</div>
+      <div class="keys">
+        <div class="key" id="modifier">Ctrl</div>
+        <div class="plus">+</div>
+        <div class="key">V</div>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text"><b>Click the event graph</b> in Unreal</div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">Press <b><span id="shortcut">Ctrl + V</span></b> to paste</div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+      if (isMac) {
+        document.getElementById('modifier').textContent = '⌘';
+        document.getElementById('shortcut').textContent = '⌘ + V';
+      }
+    </script>
+  </body>
+</html>

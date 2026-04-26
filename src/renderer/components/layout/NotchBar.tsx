@@ -1,4 +1,4 @@
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useState } from 'react';
 import robotIdleImg from '../../assets/robot-idle.png';
 import robotThinkingImg from '../../assets/robot-thinking.png';
 import robotErrorImg from '../../assets/robot-error.png';
@@ -13,6 +13,7 @@ interface NotchBarProps {
   onToggle: () => void;
   onStop?: () => void;
   onSettings?: () => void;
+  onOpenBlueprints?: () => void;
   isLoading?: boolean;
   robotStatus?: RobotStatus;
   selectedEngine?: SelectedEngine;
@@ -29,7 +30,8 @@ const robotImages: Record<RobotStatus, string> = {
   success: robotSuccessImg,
 };
 
-export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, robotStatus = 'idle', selectedEngine, onEngineChange, updateReady, updateDownloading, updateError }: NotchBarProps) {
+export function NotchBar({ isExpanded, onToggle, onStop, onSettings, onOpenBlueprints, isLoading, robotStatus = 'idle', selectedEngine, onEngineChange, updateReady, updateDownloading, updateError }: NotchBarProps) {
+  const [blueprintsHovered, setBlueprintsHovered] = useState(false);
   const handleSettingsOrUpdate = () => {
     if (updateReady) {
       window.electronAPI.updater.install();
@@ -45,8 +47,10 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
 
   const handleDragStart = useCallback(() => {
     dragHandleRef.current?.classList.add('is-dragging');
+    document.body.style.cursor = 'grabbing';
     const onUp = () => {
       dragHandleRef.current?.classList.remove('is-dragging');
+      document.body.style.cursor = '';
       window.removeEventListener('mouseup', onUp);
     };
     window.addEventListener('mouseup', onUp);
@@ -64,7 +68,7 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
       {/* Drag Handle (leftmost) - visual affordance for moving the notch */}
       <div
         ref={dragHandleRef}
-        className="drag-handle flex items-center justify-center w-4 h-full opacity-30 hover:opacity-60 transition-opacity duration-200"
+        className="drag-handle flex items-center justify-center w-4 h-full opacity-30 hover:opacity-60 transition-opacity duration-200 cursor-grab"
         onMouseDown={handleDragStart}
         title="Drag to move"
       >
@@ -78,21 +82,56 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
         </svg>
       </div>
 
-      {/* Robot Mascot Icon (Left) - Changes based on status */}
-      <div className={`w-8 h-8 rounded-full bg-white/[0.08] flex items-center justify-center no-drag overflow-hidden transition-all duration-300 ${isLoading ? 'animate-pulse' : ''}`}>
-        <img 
-          src={robotImage} 
-          alt={`Robot ${currentStatus}`} 
-          className="w-6 h-6 object-cover"
-        />
-      </div>
-
       {/* Engine Picker — only in expanded state to keep the compact notch minimal */}
       {isExpanded && onEngineChange && (
-        <EnginePickerButton
-          selectedEngine={selectedEngine ?? null}
-          onEngineChange={onEngineChange}
-        />
+        selectedEngine === 'unreal' && onOpenBlueprints ? (
+          <div
+            className="relative no-drag"
+            onMouseEnter={() => setBlueprintsHovered(true)}
+            onMouseLeave={() => setBlueprintsHovered(false)}
+          >
+            <EnginePickerButton
+              selectedEngine={selectedEngine ?? null}
+              onEngineChange={onEngineChange}
+            />
+            {/* Invisible hover bridge so the cursor can travel from engine button to popover without exiting the wrapper */}
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 w-12 h-4" aria-hidden />
+            <button
+              onClick={onOpenBlueprints}
+              className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 w-6 h-6 rounded-full bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.14] flex items-center justify-center no-drag z-10"
+              style={{
+                transform: blueprintsHovered ? 'translateY(0) scale(1)' : 'translateY(6px) scale(0.6)',
+                opacity: blueprintsHovered ? 1 : 0,
+                pointerEvents: blueprintsHovered ? 'auto' : 'none',
+                transition: 'transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 160ms ease-out',
+              }}
+              title="Blueprints Library"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-white/80"
+              >
+                <rect x="3" y="4" width="7" height="5" rx="1" />
+                <rect x="14" y="4" width="7" height="5" rx="1" />
+                <rect x="3" y="15" width="7" height="5" rx="1" />
+                <rect x="14" y="15" width="7" height="5" rx="1" />
+                <path d="M10 6.5h4M10 17.5h4M6.5 9v6M17.5 9v6" />
+              </svg>
+            </button>
+          </div>
+        ) : (
+          <EnginePickerButton
+            selectedEngine={selectedEngine ?? null}
+            onEngineChange={onEngineChange}
+          />
+        )
       )}
 
       {/* Ask Button (Center) */}
@@ -109,14 +148,11 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
           </>
         ) : (
           <>
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
-              />
-            </svg>
+            <img
+              src={robotImage}
+              alt={`Robot ${currentStatus}`}
+              className={`w-5 h-5 object-cover rounded-full ring-1 ring-white/50 ${isLoading ? 'animate-pulse' : ''}`}
+            />
             <span>Ask</span>
           </>
         )}
@@ -127,7 +163,7 @@ export function NotchBar({ isExpanded, onToggle, onStop, onSettings, isLoading, 
         onClick={handleSettingsOrUpdate}
         className="relative w-8 h-8 rounded-full bg-white/[0.08] hover:bg-white/[0.15] flex items-center justify-center no-drag transition-all duration-200"
         title={
-          updateReady ? 'Update ready — click to install' :
+          updateReady ? 'New update ready — click to restart' :
           updateError ? 'Update failed — click for settings' :
           updateDownloading ? `Downloading update v${updateDownloading}…` :
           'Settings'

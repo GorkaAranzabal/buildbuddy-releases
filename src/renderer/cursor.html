@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cursor Overlay</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html, body {
+        width: 100vw;
+        height: 100vh;
+        background: transparent !important;
+        overflow: hidden;
+      }
+
+      #cursor-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.3s ease;
+      }
+
+      #cursor-container.visible {
+        opacity: 1;
+      }
+
+      #cursor-wrapper {
+        position: absolute;
+        /* Offset so the tip of the arrow lands on the target point.
+           SVG tip is at (4,2) in a 24x24 viewbox @ 28px = (~4.7px, ~2.3px).
+           Translate nudges wrapper so the tip aligns with the target coord. */
+        transform: translate(-5px, -10px);
+        transition:
+          left 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
+          top 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+
+      /* Pulsing ring behind the cursor */
+      #pulse-ring {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 36px;
+        height: 36px;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        border: 2px solid rgba(96, 165, 250, 0.6);
+        animation: pulseRing 1.6s ease-out infinite;
+      }
+
+      @keyframes pulseRing {
+        0% {
+          transform: translate(-50%, -50%) scale(0.6);
+          opacity: 0.9;
+        }
+        100% {
+          transform: translate(-50%, -50%) scale(2.2);
+          opacity: 0;
+        }
+      }
+
+      /* The pointer arrow — downward-pointing triangle */
+      #cursor-arrow {
+        position: relative;
+        width: 0;
+        height: 0;
+        filter: drop-shadow(0 2px 6px rgba(59, 130, 246, 0.7)) drop-shadow(0 1px 2px rgba(0,0,0,0.5));
+      }
+
+      #cursor-arrow svg {
+        display: block;
+        width: 28px;
+        height: 28px;
+        /* rotate 45deg so the SVG arrow points top-left like a standard cursor */
+        transform: rotate(0deg);
+      }
+
+      /* Label bubble */
+      #cursor-label {
+        position: absolute;
+        top: 32px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(15, 20, 35, 0.88);
+        border: 1px solid rgba(96, 165, 250, 0.35);
+        border-radius: 8px;
+        padding: 4px 10px;
+        color: rgba(255, 255, 255, 0.9);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        font-size: 12px;
+        font-weight: 500;
+        white-space: nowrap;
+        pointer-events: none;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        opacity: 0;
+        transition: opacity 0.2s ease 0.3s; /* delay so label appears after cursor lands */
+      }
+
+      #cursor-label.visible {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="cursor-container">
+      <div id="cursor-wrapper">
+        <div id="pulse-ring"></div>
+        <div id="cursor-arrow">
+          <!-- Standard arrow cursor shape pointing top-left -->
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M4 2L4 18L8.5 13.5L11.5 20L13.5 19L10.5 12.5L17 12.5L4 2Z"
+              fill="white"
+              stroke="rgba(59,130,246,0.9)"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </div>
+        <div id="cursor-label"></div>
+      </div>
+    </div>
+
+    <script>
+      const { ipcRenderer } = require('electron');
+
+      const container = document.getElementById('cursor-container');
+      const wrapper = document.getElementById('cursor-wrapper');
+      const label = document.getElementById('cursor-label');
+
+      let isVisible = false;
+
+      function moveCursor(x, y, labelText) {
+        // Position using absolute pixels computed in the main process
+        // (avoids vw/vh ambiguity relative to initial window size)
+        wrapper.style.left = x + 'px';
+        wrapper.style.top = y + 'px';
+
+        if (labelText && labelText.trim()) {
+          label.textContent = labelText;
+          label.classList.add('visible');
+        } else {
+          label.classList.remove('visible');
+          label.textContent = '';
+        }
+      }
+
+      function showCursor(x, y, labelText) {
+        moveCursor(x, y, labelText);
+        if (!isVisible) {
+          isVisible = true;
+          container.classList.add('visible');
+        }
+      }
+
+      function hideCursor() {
+        isVisible = false;
+        container.classList.remove('visible');
+        label.classList.remove('visible');
+      }
+
+      ipcRenderer.on('cursor:position', (_event, data) => {
+        const { x, y, label: labelText, show } = data;
+        if (show === false) {
+          hideCursor();
+        } else {
+          showCursor(x, y, labelText || '');
+        }
+      });
+    </script>
+  </body>
+</html>

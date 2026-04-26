@@ -20,7 +20,7 @@ export default defineConfig({
                 const exactExternals = [
                   'electron', 'electron-updater', 'ws', 'lowdb', 'lowdb/node',
                   'openai', '@anthropic-ai/sdk', 'electron-store', '@jitsi/robotjs',
-                  'unreal-remote-execution', 'posthog-node',
+                  'unreal-remote-execution', 'posthog-node', 'child_process',
                 ];
                 if (exactExternals.includes(id)) return true;
                 if (id.startsWith('@modelcontextprotocol/sdk')) return true;
@@ -67,6 +67,8 @@ export default defineConfig({
       input: {
         main: path.join(__dirname, 'src/renderer/index.html'),
         vignette: path.join(__dirname, 'src/renderer/vignette.html'),
+        cursor: path.join(__dirname, 'src/renderer/cursor.html'),
+        pasteHint: path.join(__dirname, 'src/renderer/pasteHint.html'),
       },
     },
   },

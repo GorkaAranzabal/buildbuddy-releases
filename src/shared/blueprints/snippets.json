@@ -1,0 +1,341 @@
+[
+  {
+    "id": "jump-on-space",
+    "title": "Jump on Space",
+    "description": "Wires the Jump input action to the Character's built-in Jump function. Works out of the box with the default Enhanced Input IA_Jump.",
+    "category": "Input",
+    "tags": [
+      "input",
+      "character",
+      "movement"
+    ],
+    "target_blueprint": "Character",
+    "paste_instructions": "Paste into your Character Blueprint's event graph (NOT the Level Blueprint). The Character must inherit from UE5's default Character class.",
+    "is_intro": true,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_InputAction Name=\"K2Node_InputAction_0\"\n   InputActionName=\"Jump\"\n   bConsumeInput=True\n   NodePosX=-256\n   NodePosY=64\n   NodeGuid=01010000000000000000000000000000\n   CustomProperties Pin (PinId=01010000000000000000000000000001,PinName=\"Pressed\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 01020000000000000000000000000001,))\n   CustomProperties Pin (PinId=01010000000000000000000000000002,PinName=\"Released\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=01010000000000000000000000000003,PinName=\"Key\",Direction=\"EGPD_Output\",PinType.PinCategory=\"struct\",PinType.PinSubCategoryObject=ScriptStruct'/Script/InputCore.Key')\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"Jump\",MemberParent=Class'/Script/Engine.Character')\n   NodePosX=128\n   NodePosY=64\n   NodeGuid=01020000000000000000000000000000\n   CustomProperties Pin (PinId=01020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputAction_0 01010000000000000000000000000001,))\n   CustomProperties Pin (PinId=01020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=01020000000000000000000000000003,PinName=\"self\",Direction=\"EGPD_Input\",PinType.PinCategory=\"object\",PinType.PinSubCategory=\"self\",PinType.PinSubCategoryObject=Class'/Script/Engine.Character')\nEnd Object"
+  },
+  {
+    "id": "print-hello-beginplay",
+    "title": "Print Hello on BeginPlay",
+    "description": "Prints a message to the screen as soon as this actor enters play. Great for sanity-checking that an actor was spawned correctly.",
+    "category": "Event",
+    "tags": [
+      "debug",
+      "beginplay",
+      "events"
+    ],
+    "target_blueprint": "Actor",
+    "paste_instructions": "Paste into any Actor or Character Blueprint's event graph. The BeginPlay event will auto-merge with any existing BeginPlay in the graph.",
+    "is_intro": true,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name=\"K2Node_Event_0\"\n   EventReference=(MemberParent=Class'/Script/Engine.Actor',MemberName=\"ReceiveBeginPlay\")\n   bOverrideFunction=True\n   NodePosX=-288\n   NodePosY=0\n   NodeGuid=02010000000000000000000000000000\n   CustomProperties Pin (PinId=02010000000000000000000000000001,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 02020000000000000000000000000001,))\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"PrintString\",MemberParent=Class'/Script/Engine.KismetSystemLibrary')\n   NodePosX=32\n   NodePosY=0\n   NodeGuid=02020000000000000000000000000000\n   CustomProperties Pin (PinId=02020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_Event_0 02010000000000000000000000000001,))\n   CustomProperties Pin (PinId=02020000000000000000000000000002,PinName=\"InString\",Direction=\"EGPD_Input\",PinType.PinCategory=\"string\",DefaultValue=\"{{message}}\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "message",
+        "kind": "string",
+        "default": "Hello, world",
+        "description": "Message printed on BeginPlay."
+      }
+    ]
+  },
+  {
+    "id": "toggle-light-f",
+    "title": "Toggle Light on F Key",
+    "description": "Flip-flops the visibility of a Light component each time the F key is pressed. Handy for testing interactables.",
+    "category": "FlowControl",
+    "tags": [
+      "input",
+      "flipflop",
+      "visibility"
+    ],
+    "target_blueprint": "Character",
+    "paste_instructions": "Paste into your Character or PlayerController Blueprint. You'll need to wire the 'Target' pin on each Set Visibility node to the component you want to toggle.",
+    "is_intro": false,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_InputKey Name=\"K2Node_InputKey_0\"\n   InputKey={{key}}\n   NodePosX=-352\n   NodePosY=128\n   NodeGuid=03010000000000000000000000000000\n   CustomProperties Pin (PinId=03010000000000000000000000000001,PinName=\"Pressed\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_FlipFlop_0 03020000000000000000000000000001,))\n   CustomProperties Pin (PinId=03010000000000000000000000000002,PinName=\"Released\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_FlipFlop Name=\"K2Node_FlipFlop_0\"\n   NodePosX=-64\n   NodePosY=128\n   NodeGuid=03020000000000000000000000000000\n   CustomProperties Pin (PinId=03020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputKey_0 03010000000000000000000000000001,))\n   CustomProperties Pin (PinId=03020000000000000000000000000002,PinName=\"A\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 03030000000000000000000000000001,))\n   CustomProperties Pin (PinId=03020000000000000000000000000003,PinName=\"B\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_1 03040000000000000000000000000001,))\n   CustomProperties Pin (PinId=03020000000000000000000000000004,PinName=\"IsA\",Direction=\"EGPD_Output\",PinType.PinCategory=\"bool\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"SetVisibility\",MemberParent=Class'/Script/Engine.SceneComponent')\n   NodePosX=256\n   NodePosY=64\n   NodeGuid=03030000000000000000000000000000\n   CustomProperties Pin (PinId=03030000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_FlipFlop_0 03020000000000000000000000000002,))\n   CustomProperties Pin (PinId=03030000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=03030000000000000000000000000003,PinName=\"bNewVisibility\",Direction=\"EGPD_Input\",PinType.PinCategory=\"bool\",DefaultValue=\"true\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_1\"\n   FunctionReference=(MemberName=\"SetVisibility\",MemberParent=Class'/Script/Engine.SceneComponent')\n   NodePosX=256\n   NodePosY=256\n   NodeGuid=03040000000000000000000000000000\n   CustomProperties Pin (PinId=03040000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_FlipFlop_0 03020000000000000000000000000003,))\n   CustomProperties Pin (PinId=03040000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=03040000000000000000000000000003,PinName=\"bNewVisibility\",Direction=\"EGPD_Input\",PinType.PinCategory=\"bool\",DefaultValue=\"false\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "key",
+        "kind": "key_name",
+        "default": "F",
+        "description": "The key that toggles the light."
+      }
+    ]
+  },
+  {
+    "id": "health-take-damage",
+    "title": "Take Damage → Reduce Health",
+    "description": "Subtracts incoming damage from a Health variable and branches on whether the result is zero or below, emitting a death path.",
+    "category": "Event",
+    "tags": [
+      "damage",
+      "health",
+      "branch",
+      "gameplay"
+    ],
+    "target_blueprint": "Character",
+    "paste_instructions": "STEP 1: Enable Python once per project if you haven't — Edit → Plugins → 'Python Editor Script Plugin'. STEP 2: Click your target Character/Pawn blueprint ONCE in the Content Browser to select it (no need to open it). STEP 3: Window → Output Log → switch the 'Cmd' dropdown to 'Python' (not REPL). STEP 4: Paste the Python block above, press Enter. STEP 5: Open the blueprint's event graph, click Copy T3D below, paste.",
+    "is_intro": false,
+    "required_variables": [
+      {
+        "name": "Health",
+        "type": "float",
+        "default_value": "100.0"
+      }
+    ],
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name=\"K2Node_Event_0\"\n   EventReference=(MemberParent=Class'/Script/Engine.Actor',MemberName=\"ReceiveAnyDamage\")\n   bOverrideFunction=True\n   NodePosX=-400\n   NodePosY=0\n   NodeGuid=04010000000000000000000000000000\n   CustomProperties Pin (PinId=04010000000000000000000000000001,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_VariableSet_0 04040000000000000000000000000001,))\n   CustomProperties Pin (PinId=04010000000000000000000000000002,PinName=\"Damage\",Direction=\"EGPD_Output\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_CallFunction_0 04030000000000000000000000000002,))\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_VariableGet Name=\"K2Node_VariableGet_0\"\n   VariableReference=(MemberName=\"Health\",bSelfContext=True)\n   NodePosX=-240\n   NodePosY=160\n   NodeGuid=04020000000000000000000000000000\n   CustomProperties Pin (PinId=04020000000000000000000000000001,PinName=\"Health\",Direction=\"EGPD_Output\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_CallFunction_0 04030000000000000000000000000001,))\n   CustomProperties Pin (PinId=04020000000000000000000000000002,PinName=\"self\",Direction=\"EGPD_Input\",PinType.PinCategory=\"object\",PinType.PinSubCategory=\"self\",bHidden=True)\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"Subtract_DoubleDouble\",MemberParent=Class'/Script/Engine.KismetMathLibrary')\n   NodePosX=-32\n   NodePosY=144\n   NodeGuid=04030000000000000000000000000000\n   CustomProperties Pin (PinId=04030000000000000000000000000001,PinName=\"A\",Direction=\"EGPD_Input\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_VariableGet_0 04020000000000000000000000000001,))\n   CustomProperties Pin (PinId=04030000000000000000000000000002,PinName=\"B\",Direction=\"EGPD_Input\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_Event_0 04010000000000000000000000000002,))\n   CustomProperties Pin (PinId=04030000000000000000000000000003,PinName=\"ReturnValue\",Direction=\"EGPD_Output\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_VariableSet_0 04040000000000000000000000000002,))\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_VariableSet Name=\"K2Node_VariableSet_0\"\n   VariableReference=(MemberName=\"Health\",bSelfContext=True)\n   NodePosX=176\n   NodePosY=0\n   NodeGuid=04040000000000000000000000000000\n   CustomProperties Pin (PinId=04040000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_Event_0 04010000000000000000000000000001,))\n   CustomProperties Pin (PinId=04040000000000000000000000000002,PinName=\"Health\",Direction=\"EGPD_Input\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_CallFunction_0 04030000000000000000000000000003,))\n   CustomProperties Pin (PinId=04040000000000000000000000000003,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_IfThenElse_0 04050000000000000000000000000001,))\n   CustomProperties Pin (PinId=04040000000000000000000000000004,PinName=\"self\",Direction=\"EGPD_Input\",PinType.PinCategory=\"object\",PinType.PinSubCategory=\"self\",bHidden=True)\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_IfThenElse Name=\"K2Node_IfThenElse_0\"\n   NodePosX=400\n   NodePosY=0\n   NodeGuid=04050000000000000000000000000000\n   CustomProperties Pin (PinId=04050000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_VariableSet_0 04040000000000000000000000000003,))\n   CustomProperties Pin (PinId=04050000000000000000000000000002,PinName=\"Condition\",Direction=\"EGPD_Input\",PinType.PinCategory=\"bool\")\n   CustomProperties Pin (PinId=04050000000000000000000000000003,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=04050000000000000000000000000004,PinName=\"else\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object"
+  },
+  {
+    "id": "spawn-emitter-on-click",
+    "title": "Spawn Emitter on Mouse Click",
+    "description": "Spawns a particle emitter at a fixed world location when the left mouse button is clicked.",
+    "category": "Input",
+    "tags": [
+      "input",
+      "spawn",
+      "vfx"
+    ],
+    "target_blueprint": "PlayerController",
+    "paste_instructions": "Paste into your PlayerController Blueprint. Make sure 'Enable Click Events' is ticked in the PlayerController's defaults or mouse clicks will not reach this node.",
+    "is_intro": false,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_InputKey Name=\"K2Node_InputKey_0\"\n   InputKey={{key}}\n   NodePosX=-320\n   NodePosY=64\n   NodeGuid=05010000000000000000000000000000\n   CustomProperties Pin (PinId=05010000000000000000000000000001,PinName=\"Pressed\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 05020000000000000000000000000001,))\n   CustomProperties Pin (PinId=05010000000000000000000000000002,PinName=\"Released\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"SpawnEmitterAtLocation\",MemberParent=Class'/Script/Engine.GameplayStatics')\n   NodePosX=64\n   NodePosY=64\n   NodeGuid=05020000000000000000000000000000\n   CustomProperties Pin (PinId=05020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputKey_0 05010000000000000000000000000001,))\n   CustomProperties Pin (PinId=05020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "key",
+        "kind": "key_name",
+        "default": "LeftMouseButton",
+        "description": "The key/button that spawns the emitter."
+      }
+    ]
+  },
+  {
+    "id": "print-on-shift",
+    "title": "Print on Left Shift",
+    "description": "Prints \"Sprint!\" when you press Left Shift and \"Walk\" when you release it. Useful skeleton for adding a real sprint system later.",
+    "category": "Input",
+    "tags": [
+      "input",
+      "debug"
+    ],
+    "target_blueprint": "Character",
+    "paste_instructions": "Paste into your Character or PlayerController Blueprint. Press Shift in PIE to see the messages print on screen.",
+    "is_intro": true,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_InputKey Name=\"K2Node_InputKey_0\"\n   InputKey={{key}}\n   NodePosX=-352\n   NodePosY=64\n   NodeGuid=06010000000000000000000000000000\n   CustomProperties Pin (PinId=06010000000000000000000000000001,PinName=\"Pressed\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 06020000000000000000000000000001,))\n   CustomProperties Pin (PinId=06010000000000000000000000000002,PinName=\"Released\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_1 06030000000000000000000000000001,))\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"PrintString\",MemberParent=Class'/Script/Engine.KismetSystemLibrary')\n   NodePosX=64\n   NodePosY=0\n   NodeGuid=06020000000000000000000000000000\n   CustomProperties Pin (PinId=06020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputKey_0 06010000000000000000000000000001,))\n   CustomProperties Pin (PinId=06020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=06020000000000000000000000000003,PinName=\"InString\",Direction=\"EGPD_Input\",PinType.PinCategory=\"string\",DefaultValue=\"{{pressed_message}}\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_1\"\n   FunctionReference=(MemberName=\"PrintString\",MemberParent=Class'/Script/Engine.KismetSystemLibrary')\n   NodePosX=64\n   NodePosY=160\n   NodeGuid=06030000000000000000000000000000\n   CustomProperties Pin (PinId=06030000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputKey_0 06010000000000000000000000000002,))\n   CustomProperties Pin (PinId=06030000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=06030000000000000000000000000003,PinName=\"InString\",Direction=\"EGPD_Input\",PinType.PinCategory=\"string\",DefaultValue=\"{{released_message}}\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "key",
+        "kind": "key_name",
+        "default": "LeftShift",
+        "description": "The key to watch for."
+      },
+      {
+        "name": "pressed_message",
+        "kind": "string",
+        "default": "Sprint!",
+        "description": "Message printed when pressed."
+      },
+      {
+        "name": "released_message",
+        "kind": "string",
+        "default": "Walk",
+        "description": "Message printed when released."
+      }
+    ]
+  },
+  {
+    "id": "print-on-jump",
+    "title": "Print on Jump Action",
+    "description": "Prints \"Jumped!\" whenever the Jump input action fires. Works out of the box with the default Enhanced Input IA_Jump.",
+    "category": "Input",
+    "tags": [
+      "input",
+      "debug",
+      "enhanced-input"
+    ],
+    "target_blueprint": "Character",
+    "paste_instructions": "Paste into your Character Blueprint. Your project must have an IA_Jump Input Action (the default third-person template ships with one).",
+    "is_intro": true,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_InputAction Name=\"K2Node_InputAction_0\"\n   InputActionName=\"Jump\"\n   bConsumeInput=True\n   NodePosX=-256\n   NodePosY=64\n   NodeGuid=07010000000000000000000000000000\n   CustomProperties Pin (PinId=07010000000000000000000000000001,PinName=\"Pressed\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 07020000000000000000000000000001,))\n   CustomProperties Pin (PinId=07010000000000000000000000000002,PinName=\"Released\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=07010000000000000000000000000003,PinName=\"Key\",Direction=\"EGPD_Output\",PinType.PinCategory=\"struct\",PinType.PinSubCategoryObject=ScriptStruct'/Script/InputCore.Key')\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"PrintString\",MemberParent=Class'/Script/Engine.KismetSystemLibrary')\n   NodePosX=128\n   NodePosY=64\n   NodeGuid=07020000000000000000000000000000\n   CustomProperties Pin (PinId=07020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputAction_0 07010000000000000000000000000001,))\n   CustomProperties Pin (PinId=07020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=07020000000000000000000000000003,PinName=\"InString\",Direction=\"EGPD_Input\",PinType.PinCategory=\"string\",DefaultValue=\"{{message}}\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "message",
+        "kind": "string",
+        "default": "Jumped!",
+        "description": "Message printed when jump fires."
+      }
+    ]
+  },
+  {
+    "id": "quit-on-escape",
+    "title": "Quit Game on Escape",
+    "description": "Quits the game when the player presses Escape. Handy while developing so you do not need to Alt+F4 out of a PIE session.",
+    "category": "Input",
+    "tags": [
+      "input",
+      "quit",
+      "dev"
+    ],
+    "target_blueprint": "PlayerController",
+    "paste_instructions": "Paste into your PlayerController Blueprint. Escape will immediately quit the PIE session or the packaged build.",
+    "is_intro": true,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_InputKey Name=\"K2Node_InputKey_0\"\n   InputKey={{key}}\n   NodePosX=-320\n   NodePosY=64\n   NodeGuid=08010000000000000000000000000000\n   CustomProperties Pin (PinId=08010000000000000000000000000001,PinName=\"Pressed\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 08020000000000000000000000000001,))\n   CustomProperties Pin (PinId=08010000000000000000000000000002,PinName=\"Released\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"QuitGame\",MemberParent=Class'/Script/Engine.KismetSystemLibrary')\n   NodePosX=64\n   NodePosY=64\n   NodeGuid=08020000000000000000000000000000\n   CustomProperties Pin (PinId=08020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputKey_0 08010000000000000000000000000001,))\n   CustomProperties Pin (PinId=08020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "key",
+        "kind": "key_name",
+        "default": "Escape",
+        "description": "The key that quits the game."
+      }
+    ]
+  },
+  {
+    "id": "show-mouse-on-beginplay",
+    "title": "Show Mouse Cursor on BeginPlay",
+    "description": "Reveals the OS mouse cursor the moment the PlayerController enters play. Required for any UI-heavy game.",
+    "category": "Event",
+    "tags": [
+      "beginplay",
+      "cursor",
+      "ui"
+    ],
+    "target_blueprint": "PlayerController",
+    "paste_instructions": "Paste into your PlayerController Blueprint. The cursor shows up immediately on play.",
+    "is_intro": true,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name=\"K2Node_Event_0\"\n   EventReference=(MemberParent=Class'/Script/Engine.Actor',MemberName=\"ReceiveBeginPlay\")\n   bOverrideFunction=True\n   NodePosX=-288\n   NodePosY=0\n   NodeGuid=09010000000000000000000000000000\n   CustomProperties Pin (PinId=09010000000000000000000000000001,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 09020000000000000000000000000001,))\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"SetShowMouseCursor\",MemberParent=Class'/Script/Engine.PlayerController')\n   NodePosX=64\n   NodePosY=0\n   NodeGuid=09020000000000000000000000000000\n   CustomProperties Pin (PinId=09020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_Event_0 09010000000000000000000000000001,))\n   CustomProperties Pin (PinId=09020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=09020000000000000000000000000003,PinName=\"bShow\",Direction=\"EGPD_Input\",PinType.PinCategory=\"bool\",DefaultValue=\"true\")\nEnd Object"
+  },
+  {
+    "id": "crouch-on-c",
+    "title": "Crouch on C Key",
+    "description": "Crouches while C is held and uncrouches on release. Requires Can Crouch to be enabled on CharacterMovement.",
+    "category": "Input",
+    "tags": [
+      "input",
+      "movement",
+      "character"
+    ],
+    "target_blueprint": "Character",
+    "paste_instructions": "Paste into your Character Blueprint. You must tick \"Can Crouch\" on the CharacterMovement component defaults or Crouch will silently no-op.",
+    "is_intro": true,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_InputKey Name=\"K2Node_InputKey_0\"\n   InputKey={{key}}\n   NodePosX=-352\n   NodePosY=64\n   NodeGuid=0A010000000000000000000000000000\n   CustomProperties Pin (PinId=0A010000000000000000000000000001,PinName=\"Pressed\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 0A020000000000000000000000000001,))\n   CustomProperties Pin (PinId=0A010000000000000000000000000002,PinName=\"Released\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_1 0A030000000000000000000000000001,))\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"Crouch\",MemberParent=Class'/Script/Engine.Character')\n   NodePosX=64\n   NodePosY=0\n   NodeGuid=0A020000000000000000000000000000\n   CustomProperties Pin (PinId=0A020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputKey_0 0A010000000000000000000000000001,))\n   CustomProperties Pin (PinId=0A020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_1\"\n   FunctionReference=(MemberName=\"UnCrouch\",MemberParent=Class'/Script/Engine.Character')\n   NodePosX=64\n   NodePosY=160\n   NodeGuid=0A030000000000000000000000000000\n   CustomProperties Pin (PinId=0A030000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputKey_0 0A010000000000000000000000000002,))\n   CustomProperties Pin (PinId=0A030000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "key",
+        "kind": "key_name",
+        "default": "C",
+        "description": "The key that toggles crouch."
+      }
+    ]
+  },
+  {
+    "id": "destroy-on-overlap",
+    "title": "Destroy Self on Overlap",
+    "description": "Destroys this actor the moment anything overlaps it. A one-line pickup-on-touch primitive.",
+    "category": "Event",
+    "tags": [
+      "overlap",
+      "destroy",
+      "pickup"
+    ],
+    "target_blueprint": "Actor",
+    "paste_instructions": "Paste into any Actor Blueprint that has a collision component set to Generate Overlap Events.",
+    "is_intro": false,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name=\"K2Node_Event_0\"\n   EventReference=(MemberParent=Class'/Script/Engine.Actor',MemberName=\"ReceiveActorBeginOverlap\")\n   bOverrideFunction=True\n   NodePosX=-288\n   NodePosY=0\n   NodeGuid=0B010000000000000000000000000000\n   CustomProperties Pin (PinId=0B010000000000000000000000000001,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 0B020000000000000000000000000001,))\n   CustomProperties Pin (PinId=0B010000000000000000000000000002,PinName=\"OtherActor\",Direction=\"EGPD_Output\",PinType.PinCategory=\"object\",PinType.PinSubCategoryObject=Class'/Script/Engine.Actor')\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"K2_DestroyActor\",MemberParent=Class'/Script/Engine.Actor')\n   NodePosX=64\n   NodePosY=0\n   NodeGuid=0B020000000000000000000000000000\n   CustomProperties Pin (PinId=0B020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_Event_0 0B010000000000000000000000000001,))\n   CustomProperties Pin (PinId=0B020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object"
+  },
+  {
+    "id": "health-regen-tick",
+    "title": "Regen Health on Tick",
+    "description": "Adds 0.1 to a Health variable every Tick. Pair with the Take Damage snippet for a simple regen-over-time system.",
+    "category": "Event",
+    "tags": [
+      "health",
+      "tick",
+      "gameplay"
+    ],
+    "target_blueprint": "Character",
+    "paste_instructions": "Paste into your Character Blueprint. The Setup button will auto-create the Health variable with default 100.0. No cap is applied in this snippet — add a Clamp or Branch if you want one.",
+    "is_intro": false,
+    "required_variables": [
+      {
+        "name": "Health",
+        "type": "float",
+        "default_value": "100.0"
+      }
+    ],
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name=\"K2Node_Event_0\"\n   EventReference=(MemberParent=Class'/Script/Engine.Actor',MemberName=\"ReceiveTick\")\n   bOverrideFunction=True\n   NodePosX=-400\n   NodePosY=0\n   NodeGuid=0C010000000000000000000000000000\n   CustomProperties Pin (PinId=0C010000000000000000000000000001,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_VariableSet_0 0C040000000000000000000000000001,))\n   CustomProperties Pin (PinId=0C010000000000000000000000000002,PinName=\"DeltaSeconds\",Direction=\"EGPD_Output\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"float\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_VariableGet Name=\"K2Node_VariableGet_0\"\n   VariableReference=(MemberName=\"Health\",bSelfContext=True)\n   NodePosX=-240\n   NodePosY=160\n   NodeGuid=0C020000000000000000000000000000\n   CustomProperties Pin (PinId=0C020000000000000000000000000001,PinName=\"Health\",Direction=\"EGPD_Output\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_CallFunction_0 0C030000000000000000000000000001,))\n   CustomProperties Pin (PinId=0C020000000000000000000000000002,PinName=\"self\",Direction=\"EGPD_Input\",PinType.PinCategory=\"object\",PinType.PinSubCategory=\"self\",bHidden=True)\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"Add_DoubleDouble\",MemberParent=Class'/Script/Engine.KismetMathLibrary')\n   NodePosX=-32\n   NodePosY=144\n   NodeGuid=0C030000000000000000000000000000\n   CustomProperties Pin (PinId=0C030000000000000000000000000001,PinName=\"A\",Direction=\"EGPD_Input\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_VariableGet_0 0C020000000000000000000000000001,))\n   CustomProperties Pin (PinId=0C030000000000000000000000000002,PinName=\"B\",Direction=\"EGPD_Input\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",DefaultValue=\"0.1\")\n   CustomProperties Pin (PinId=0C030000000000000000000000000003,PinName=\"ReturnValue\",Direction=\"EGPD_Output\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_VariableSet_0 0C040000000000000000000000000002,))\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_VariableSet Name=\"K2Node_VariableSet_0\"\n   VariableReference=(MemberName=\"Health\",bSelfContext=True)\n   NodePosX=176\n   NodePosY=0\n   NodeGuid=0C040000000000000000000000000000\n   CustomProperties Pin (PinId=0C040000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_Event_0 0C010000000000000000000000000001,))\n   CustomProperties Pin (PinId=0C040000000000000000000000000002,PinName=\"Health\",Direction=\"EGPD_Input\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\",LinkedTo=(K2Node_CallFunction_0 0C030000000000000000000000000003,))\n   CustomProperties Pin (PinId=0C040000000000000000000000000003,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=0C040000000000000000000000000004,PinName=\"self\",Direction=\"EGPD_Input\",PinType.PinCategory=\"object\",PinType.PinSubCategory=\"self\",bHidden=True)\nEnd Object"
+  },
+  {
+    "id": "pause-unpause-p",
+    "title": "Pause / Unpause on P",
+    "description": "Toggles the game paused state each time the player presses P. Great for a developer pause key.",
+    "category": "FlowControl",
+    "tags": [
+      "input",
+      "pause",
+      "flipflop"
+    ],
+    "target_blueprint": "PlayerController",
+    "paste_instructions": "Paste into your PlayerController Blueprint. P toggles paused; if your HUD dims on pause, expect that behavior to fire.",
+    "is_intro": false,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_InputKey Name=\"K2Node_InputKey_0\"\n   InputKey={{key}}\n   NodePosX=-352\n   NodePosY=128\n   NodeGuid=0D010000000000000000000000000000\n   CustomProperties Pin (PinId=0D010000000000000000000000000001,PinName=\"Pressed\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_FlipFlop_0 0D020000000000000000000000000001,))\n   CustomProperties Pin (PinId=0D010000000000000000000000000002,PinName=\"Released\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_FlipFlop Name=\"K2Node_FlipFlop_0\"\n   NodePosX=-64\n   NodePosY=128\n   NodeGuid=0D020000000000000000000000000000\n   CustomProperties Pin (PinId=0D020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_InputKey_0 0D010000000000000000000000000001,))\n   CustomProperties Pin (PinId=0D020000000000000000000000000002,PinName=\"A\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 0D030000000000000000000000000001,))\n   CustomProperties Pin (PinId=0D020000000000000000000000000003,PinName=\"B\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_1 0D040000000000000000000000000001,))\n   CustomProperties Pin (PinId=0D020000000000000000000000000004,PinName=\"IsA\",Direction=\"EGPD_Output\",PinType.PinCategory=\"bool\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"SetGamePaused\",MemberParent=Class'/Script/Engine.GameplayStatics')\n   NodePosX=256\n   NodePosY=64\n   NodeGuid=0D030000000000000000000000000000\n   CustomProperties Pin (PinId=0D030000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_FlipFlop_0 0D020000000000000000000000000002,))\n   CustomProperties Pin (PinId=0D030000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=0D030000000000000000000000000003,PinName=\"bPaused\",Direction=\"EGPD_Input\",PinType.PinCategory=\"bool\",DefaultValue=\"true\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_1\"\n   FunctionReference=(MemberName=\"SetGamePaused\",MemberParent=Class'/Script/Engine.GameplayStatics')\n   NodePosX=256\n   NodePosY=256\n   NodeGuid=0D040000000000000000000000000000\n   CustomProperties Pin (PinId=0D040000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_FlipFlop_0 0D020000000000000000000000000003,))\n   CustomProperties Pin (PinId=0D040000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=0D040000000000000000000000000003,PinName=\"bPaused\",Direction=\"EGPD_Input\",PinType.PinCategory=\"bool\",DefaultValue=\"false\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "key",
+        "kind": "key_name",
+        "default": "P",
+        "description": "The key that pauses/unpauses."
+      }
+    ]
+  },
+  {
+    "id": "print-on-overlap",
+    "title": "Print on Overlap",
+    "description": "Prints \"Overlap!\" each time something overlaps this actor. Skeleton for building pickups, triggers, and damage volumes.",
+    "category": "Event",
+    "tags": [
+      "overlap",
+      "debug",
+      "trigger"
+    ],
+    "target_blueprint": "Actor",
+    "paste_instructions": "Paste into any Actor Blueprint with a collision component set to Generate Overlap Events.",
+    "is_intro": false,
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name=\"K2Node_Event_0\"\n   EventReference=(MemberParent=Class'/Script/Engine.Actor',MemberName=\"ReceiveActorBeginOverlap\")\n   bOverrideFunction=True\n   NodePosX=-288\n   NodePosY=0\n   NodeGuid=0E010000000000000000000000000000\n   CustomProperties Pin (PinId=0E010000000000000000000000000001,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 0E020000000000000000000000000001,))\n   CustomProperties Pin (PinId=0E010000000000000000000000000002,PinName=\"OtherActor\",Direction=\"EGPD_Output\",PinType.PinCategory=\"object\",PinType.PinSubCategoryObject=Class'/Script/Engine.Actor')\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"PrintString\",MemberParent=Class'/Script/Engine.KismetSystemLibrary')\n   NodePosX=64\n   NodePosY=0\n   NodeGuid=0E020000000000000000000000000000\n   CustomProperties Pin (PinId=0E020000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_Event_0 0E010000000000000000000000000001,))\n   CustomProperties Pin (PinId=0E020000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=0E020000000000000000000000000003,PinName=\"InString\",Direction=\"EGPD_Input\",PinType.PinCategory=\"string\",DefaultValue=\"{{message}}\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "message",
+        "kind": "string",
+        "default": "Overlap!",
+        "description": "Message printed when overlap fires."
+      }
+    ]
+  },
+  {
+    "id": "die-on-any-damage",
+    "title": "Die on Any Damage",
+    "description": "Sets a bIsDead flag to true and prints \"You died\" the first time the actor takes any damage. Guards against firing twice.",
+    "category": "Event",
+    "tags": [
+      "damage",
+      "death",
+      "branch",
+      "gameplay"
+    ],
+    "target_blueprint": "Character",
+    "paste_instructions": "Paste into your Character Blueprint. The Setup button will auto-create the bIsDead variable with default false. Extend the path after PrintString to destroy the actor, swap the mesh, etc.",
+    "is_intro": false,
+    "required_variables": [
+      {
+        "name": "bIsDead",
+        "type": "bool",
+        "default_value": "false"
+      }
+    ],
+    "t3d": "Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name=\"K2Node_Event_0\"\n   EventReference=(MemberParent=Class'/Script/Engine.Actor',MemberName=\"ReceiveAnyDamage\")\n   bOverrideFunction=True\n   NodePosX=-400\n   NodePosY=0\n   NodeGuid=0F010000000000000000000000000000\n   CustomProperties Pin (PinId=0F010000000000000000000000000001,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_IfThenElse_0 0F030000000000000000000000000001,))\n   CustomProperties Pin (PinId=0F010000000000000000000000000002,PinName=\"Damage\",Direction=\"EGPD_Output\",PinType.PinCategory=\"real\",PinType.PinSubCategory=\"double\")\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_VariableGet Name=\"K2Node_VariableGet_0\"\n   VariableReference=(MemberName=\"bIsDead\",bSelfContext=True)\n   NodePosX=-240\n   NodePosY=160\n   NodeGuid=0F020000000000000000000000000000\n   CustomProperties Pin (PinId=0F020000000000000000000000000001,PinName=\"bIsDead\",Direction=\"EGPD_Output\",PinType.PinCategory=\"bool\",LinkedTo=(K2Node_IfThenElse_0 0F030000000000000000000000000002,))\n   CustomProperties Pin (PinId=0F020000000000000000000000000002,PinName=\"self\",Direction=\"EGPD_Input\",PinType.PinCategory=\"object\",PinType.PinSubCategory=\"self\",bHidden=True)\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_IfThenElse Name=\"K2Node_IfThenElse_0\"\n   NodePosX=-32\n   NodePosY=0\n   NodeGuid=0F030000000000000000000000000000\n   CustomProperties Pin (PinId=0F030000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_Event_0 0F010000000000000000000000000001,))\n   CustomProperties Pin (PinId=0F030000000000000000000000000002,PinName=\"Condition\",Direction=\"EGPD_Input\",PinType.PinCategory=\"bool\",LinkedTo=(K2Node_VariableGet_0 0F020000000000000000000000000001,))\n   CustomProperties Pin (PinId=0F030000000000000000000000000003,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=0F030000000000000000000000000004,PinName=\"else\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_VariableSet_0 0F040000000000000000000000000001,))\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_VariableSet Name=\"K2Node_VariableSet_0\"\n   VariableReference=(MemberName=\"bIsDead\",bSelfContext=True)\n   NodePosX=208\n   NodePosY=0\n   NodeGuid=0F040000000000000000000000000000\n   CustomProperties Pin (PinId=0F040000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_IfThenElse_0 0F030000000000000000000000000004,))\n   CustomProperties Pin (PinId=0F040000000000000000000000000002,PinName=\"bIsDead\",Direction=\"EGPD_Input\",PinType.PinCategory=\"bool\",DefaultValue=\"true\")\n   CustomProperties Pin (PinId=0F040000000000000000000000000003,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_CallFunction_0 0F050000000000000000000000000001,))\n   CustomProperties Pin (PinId=0F040000000000000000000000000004,PinName=\"self\",Direction=\"EGPD_Input\",PinType.PinCategory=\"object\",PinType.PinSubCategory=\"self\",bHidden=True)\nEnd Object\nBegin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name=\"K2Node_CallFunction_0\"\n   FunctionReference=(MemberName=\"PrintString\",MemberParent=Class'/Script/Engine.KismetSystemLibrary')\n   NodePosX=448\n   NodePosY=0\n   NodeGuid=0F050000000000000000000000000000\n   CustomProperties Pin (PinId=0F050000000000000000000000000001,PinName=\"execute\",Direction=\"EGPD_Input\",PinType.PinCategory=\"exec\",LinkedTo=(K2Node_VariableSet_0 0F040000000000000000000000000003,))\n   CustomProperties Pin (PinId=0F050000000000000000000000000002,PinName=\"then\",Direction=\"EGPD_Output\",PinType.PinCategory=\"exec\")\n   CustomProperties Pin (PinId=0F050000000000000000000000000003,PinName=\"InString\",Direction=\"EGPD_Input\",PinType.PinCategory=\"string\",DefaultValue=\"{{message}}\")\nEnd Object",
+    "parameters": [
+      {
+        "name": "message",
+        "kind": "string",
+        "default": "You died",
+        "description": "Message printed when damage fires."
+      }
+    ]
+  }
+]

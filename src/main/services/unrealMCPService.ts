@@ -765,6 +765,46 @@ const TOOL_DEFINITIONS: MCPToolDefinition[] = [
       },
     },
   },
+
+  // ----- Synthetic tool: Build Buddy blueprint composer -----
+  // Handled locally in main process — never forwarded to Unreal as raw Python.
+  {
+    name: 'compose_blueprint',
+    description: 'Compose a custom blueprint by unioning one or more Build Buddy library snippets. Writes composed T3D to the clipboard, creates required variables, opens the target blueprint, and prompts the user to press Cmd/Ctrl+V in the event graph. Only use snippet IDs from the Blueprint Snippet Catalog — never invent IDs. Snippets with parameters accept per-snippet overrides via the params field.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        snippet_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'One or more snippet IDs from the Blueprint Snippet Catalog. Pick the smallest set that covers the user\'s ask.',
+        },
+        params: {
+          type: 'object',
+          description: 'Per-snippet parameter overrides keyed by snippet ID. Example: { "quit-on-escape": { "key": "H" } }. Only use parameter names listed for that snippet in the catalog.',
+          additionalProperties: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+          },
+        },
+      },
+      required: ['snippet_ids'],
+    },
+  },
+  {
+    name: 'build_blueprint_freeform',
+    description: 'Last-resort Blueprint generator for asks no library snippet covers, even with parameter overrides. Accepts a structured intent (trigger + linear action chain + optional variables). Only call AFTER confirming compose_blueprint cannot work. Functions must come from the whitelist in the system prompt.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        intent: {
+          type: 'object',
+          description: 'BlueprintIntent JSON — see schema in the Blueprint Snippet Catalog system prompt for valid trigger/action shapes and the function whitelist.',
+        },
+      },
+      required: ['intent'],
+    },
+  },
 ];
 
 export class UnrealMCPService {

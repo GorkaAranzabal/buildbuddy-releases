@@ -13,6 +13,7 @@ export function UpgradePrompt({ onDismiss, title, message }: UpgradePromptProps)
   const [refreshed, setRefreshed] = useState(false);
 
   const handleUpgrade = () => {
+    window.electronAPI?.analytics?.track('upgrade_clicked', { source: 'upgrade_prompt' });
     window.open('https://build-buddy.app/pricing', '_blank');
   };
 

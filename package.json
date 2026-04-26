@@ -1,7 +1,7 @@
 {
   "name": "gorka-copilot-overlay",
   "productName": "BuildBuddy",
-  "version": "1.0.28",
+  "version": "1.0.35",
   "description": "Desktop overlay assistant for Unreal Engine developers",
   "main": "dist/main/index.js",
   "author": "Gorka Copilot Team",
@@ -26,17 +26,19 @@
     "@runreal/unreal-mcp": "^0.1.4",
     "electron-store": "^8.1.0",
     "electron-updater": "^6.7.3",
+    "gopeak": "^2.3.3",
     "lowdb": "^7.0.1",
     "openai": "^4.28.0",
     "posthog-node": "^5.24.17",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^9.0.1",
+    "reactflow": "^11.11.4",
     "unreal-remote-execution": "^1.0.0",
     "uuid": "^9.0.1",
     "ws": "^8.16.0",
-    "zustand": "^4.5.0",
-    "gopeak": "^2.3.3"
+    "youtube-transcript": "^1.3.0",
+    "zustand": "^4.5.0"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
@@ -116,9 +118,7 @@
       "releaseType": "release"
     },
     "asarUnpack": [
-      "node_modules/@runreal/unreal-mcp/**",
-      "node_modules/@modelcontextprotocol/**",
-      "node_modules/gopeak/**",
+      "node_modules/**",
       "**/*.node"
     ],
     "extraResources": [

@@ -342,7 +342,7 @@ export class UEFNMCPAdapter implements IEngineMCPService {
     return this.service.testConnection();
   }
 
-  onStatusChange(cb: (status: EngineMCPStatus) => void): void {
+  onStatusChange(cb: (status: EngineMCPStatus, error?: string) => void): void {
     this.service.onStatusChange(cb as (status: string) => void);
   }
 
