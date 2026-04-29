@@ -47,7 +47,11 @@ const STDERR_RING_MAX = 4096;
 const CONNECT_TIMEOUT_MS = 15_000;
 const HEALTH_PROBE_INTERVAL_MS = 5_000;
 const HEALTH_PROBE_TIMEOUT_MS = 1_500;
-const BLENDER_ADDON_HOST = '127.0.0.1';
+// The Blender addon binds to host='localhost', which Python's getaddrinfo can
+// resolve to either 127.0.0.1 (IPv4) or ::1 (IPv6) depending on the build.
+// Probe both so we don't falsely conclude "addon not listening" when it's just
+// on the other family.
+const BLENDER_ADDON_HOSTS = ['127.0.0.1', '::1'] as const;
 const BLENDER_ADDON_PORT = 9876;
 
 // blender-mcp's stdio subprocess stays alive even when its TCP socket to
@@ -57,6 +61,18 @@ const BLENDER_ADDON_PORT = 9876;
 const BLENDER_UNREACHABLE_RE = /Could not connect to Blender|Failed to connect to Blender|Connection refused/i;
 const BLENDER_UNREACHABLE_MSG = 'Blender addon socket is not reachable — in Blender, click Disconnect then Connect on the BlenderMCP panel (or restart Blender).';
 
+// macOS hardened-runtime apps need explicit Local Network permission to make
+// loopback connections on recent macOS releases. When TCC denies it, the
+// connect() returns EPERM/EACCES rather than the expected ECONNREFUSED.
+const PERMISSION_DENIED_CODES = new Set(['EPERM', 'EACCES']);
+const LOCAL_NETWORK_PERMISSION_MSG = "BuildBuddy doesn't have macOS Local Network access. Open System Settings → Privacy & Security → Local Network and enable BuildBuddy, then quit and reopen the app.";
+
+interface ProbeResult {
+  ok: boolean;
+  host?: string;
+  errorCode?: string;
+}
+
 export class BlenderMCPAdapter implements IEngineMCPService {
   private status: EngineMCPStatus = 'disconnected';
   private statusCallbacks: Array<(s: EngineMCPStatus, error?: string) => void> = [];
@@ -65,6 +81,10 @@ export class BlenderMCPAdapter implements IEngineMCPService {
   private addonPath: string;
   private stderrBuf = '';
   private healthProbeTimer: ReturnType<typeof setInterval> | null = null;
+  // Once we've probed both families, remember which one answered so subsequent
+  // probes hit the right family on the first try (avoids a 1.5s wait on the
+  // wrong family every health-probe tick).
+  private preferredHost: string | null = null;
 
   constructor() {
     this.addonPath = path.join(app.getPath('userData'), 'blender-mcp', 'addon.py');
@@ -135,9 +155,9 @@ export class BlenderMCPAdapter implements IEngineMCPService {
   private startHealthProbe(): void {
     if (this.healthProbeTimer) return;
     this.healthProbeTimer = setInterval(() => {
-      this.probeAddon().then((ok) => {
-        if (!ok && this.status === 'connected') {
-          this.logDiagnostic(`healthProbe: addon socket unreachable on ${BLENDER_ADDON_HOST}:${BLENDER_ADDON_PORT}`);
+      this.probeAddon().then((res) => {
+        if (!res.ok && this.status === 'connected') {
+          this.logDiagnostic(`healthProbe: addon socket unreachable on :${BLENDER_ADDON_PORT} (${res.errorCode ?? 'unknown'})`);
           this.setStatus('error', BLENDER_UNREACHABLE_MSG);
         }
       });
@@ -151,24 +171,52 @@ export class BlenderMCPAdapter implements IEngineMCPService {
     }
   }
 
-  private probeAddon(): Promise<boolean> {
+  // Probe the addon on whichever loopback family is bound. Tries the cached
+  // preferred host first, otherwise both families in order. Errno is captured
+  // so callers can distinguish ECONNREFUSED (addon not running) from
+  // EPERM/EACCES (macOS Local Network permission denied).
+  private async probeAddon(): Promise<ProbeResult> {
+    const order = this.preferredHost
+      ? [this.preferredHost, ...BLENDER_ADDON_HOSTS.filter((h) => h !== this.preferredHost)]
+      : [...BLENDER_ADDON_HOSTS];
+
+    let lastErrorCode: string | undefined;
+    for (const host of order) {
+      const result = await this.probeOne(host);
+      if (result.ok) {
+        this.preferredHost = host;
+        return result;
+      }
+      // Don't let a refused IPv4 mask a permission-denied IPv6 (or vice versa).
+      // Permission-denied is the more diagnostic signal — keep it.
+      if (PERMISSION_DENIED_CODES.has(result.errorCode ?? '')) {
+        lastErrorCode = result.errorCode;
+      } else if (!lastErrorCode) {
+        lastErrorCode = result.errorCode;
+      }
+    }
+    return { ok: false, errorCode: lastErrorCode };
+  }
+
+  private probeOne(host: string): Promise<ProbeResult> {
     return new Promise((resolve) => {
       const sock = new net.Socket();
       let settled = false;
-      const finish = (ok: boolean) => {
+      const finish = (result: ProbeResult) => {
         if (settled) return;
         settled = true;
         try { sock.destroy(); } catch { /* ignore */ }
-        resolve(ok);
+        resolve(result);
       };
       sock.setTimeout(HEALTH_PROBE_TIMEOUT_MS);
-      sock.once('connect', () => finish(true));
-      sock.once('error', () => finish(false));
-      sock.once('timeout', () => finish(false));
+      sock.once('connect', () => finish({ ok: true, host }));
+      sock.once('error', (err: NodeJS.ErrnoException) => finish({ ok: false, host, errorCode: err.code ?? 'EUNKNOWN' }));
+      sock.once('timeout', () => finish({ ok: false, host, errorCode: 'ETIMEDOUT' }));
       try {
-        sock.connect(BLENDER_ADDON_PORT, BLENDER_ADDON_HOST);
-      } catch {
-        finish(false);
+        sock.connect(BLENDER_ADDON_PORT, host);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code ?? 'EUNKNOWN';
+        finish({ ok: false, host, errorCode: code });
       }
     });
   }
@@ -250,7 +298,7 @@ export class BlenderMCPAdapter implements IEngineMCPService {
     // if Blender's addon is genuinely reachable. Otherwise tear down and reconnect so
     // explicit Connect/Reconnect clicks always do real work.
     if (this.status === 'connected') {
-      if (await this.probeAddon()) return { success: true };
+      if ((await this.probeAddon()).ok) return { success: true };
       this.logDiagnostic('start: stale connected state, tearing down for fresh reconnect');
       await this.stop();
     }
@@ -268,9 +316,12 @@ export class BlenderMCPAdapter implements IEngineMCPService {
       // Pre-flight: probe the Blender addon socket directly. If it isn't bound,
       // fail fast — no point spawning blender-mcp just to have every call fail.
       // This also prevents the brief "MCP connected" flash users would otherwise see.
-      if (!(await this.probeAddon())) {
-        const errMsg = `Blender addon is not listening on ${BLENDER_ADDON_HOST}:${BLENDER_ADDON_PORT}. In Blender, open the N panel → BlenderMCP tab → Connect to MCP server.`;
-        this.logDiagnostic(`start: addon pre-flight FAILED — ${BLENDER_ADDON_HOST}:${BLENDER_ADDON_PORT} unreachable`);
+      const probe = await this.probeAddon();
+      if (!probe.ok) {
+        const errMsg = PERMISSION_DENIED_CODES.has(probe.errorCode ?? '')
+          ? LOCAL_NETWORK_PERMISSION_MSG
+          : `Blender addon is not listening on :${BLENDER_ADDON_PORT} (${probe.errorCode ?? 'unreachable'}). In Blender, open the N panel → BlenderMCP tab → Connect to MCP server.`;
+        this.logDiagnostic(`start: addon pre-flight FAILED — :${BLENDER_ADDON_PORT} (${probe.errorCode ?? 'unknown'})`);
         this.setStatus('error', errMsg);
         return { success: false, error: errMsg };
       }

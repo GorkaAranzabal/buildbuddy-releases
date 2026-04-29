@@ -1564,6 +1564,22 @@ let gorkaCopilot: GorkaCopilotApp;
 
 // Handle app ready
 app.whenReady().then(async () => {
+  // Force the macOS Local Network permission prompt early. macOS gates loopback
+  // socket calls in some recent releases — without an explicit grant the
+  // Blender MCP probe to 127.0.0.1:9876 fails with EPERM/EACCES. Touching a
+  // refused loopback port (1) at startup triggers TCC to surface the prompt
+  // before the user clicks Connect, so the grant is in place when needed.
+  if (process.platform === 'darwin') {
+    try {
+      const { Socket } = await import('net');
+      const probe = new Socket();
+      probe.setTimeout(500);
+      probe.once('error', () => probe.destroy());
+      probe.once('timeout', () => probe.destroy());
+      probe.connect(1, '127.0.0.1');
+    } catch { /* best-effort */ }
+  }
+
   // YouTube embeds are blocked in production because the page loads from file://,
   // giving a null Referer that YouTube rejects. Inject a real Referer so the embed loads.
   session.defaultSession.webRequest.onBeforeSendHeaders(

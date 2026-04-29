@@ -1,7 +1,7 @@
 {
   "name": "gorka-copilot-overlay",
   "productName": "BuildBuddy",
-  "version": "1.0.35",
+  "version": "1.0.36",
   "description": "Desktop overlay assistant for Unreal Engine developers",
   "main": "dist/main/index.js",
   "author": "Gorka Copilot Team",
